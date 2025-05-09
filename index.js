@@ -140,6 +140,19 @@ app.get('/api/test-db', async (req, res) => {
   }
 });
 
+// News Endpoint
+app.get('/api/news', async (req, res) => {
+  console.log('Received /api/news request');
+  try {
+    const [rows] = await pool.query('SELECT * FROM news ORDER BY created_at DESC');
+    console.log('News fetched:', rows);
+    res.json(rows);
+  } catch (error) {
+    console.error('Error fetching news:', error.message);
+    res.status(500).json({ error: 'Failed to fetch news' });
+  }
+});
+
 // Membership Join
 app.post('/api/membership/join', async (req, res) => {
   const { fullName, contactNumber, id, schoolName, officeContact } = req.body;
