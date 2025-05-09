@@ -1,5 +1,5 @@
 const express = require('express');
-const { MongoClient } = require('mongodb');
+const mysql = require('mysql2/promise');
 const cors = require('cors');
 require('dotenv').config();
 
@@ -8,70 +8,142 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB Connection
-const uri = process.env.MONGODB_URI || 'mongodb+srv://tjama:tjama@cluster0.reg0b8e.mongodb.net/';
-const client = new MongoClient(uri);
+// MySQL Connection
+const pool = mysql.createPool({
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'btu_burial',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0
+});
 
-async function connectDB() {
+async function initializeDB() {
   try {
-    await client.connect();
-    console.log('MongoDB Connected');
-    const db = client.db('btu_burial');
+    const connection = await pool.getConnection();
+    console.log('MySQL Connected');
 
-    const collections = [
-      'members',
-      'tombstone_purchases',
-      'funeral_notices',
-      'contact_messages',
-      'survey_responses',
-      'election_registrations',
-    ];
-    for (const collection of collections) {
-      await db.createCollection(collection).catch(() => console.log(`${collection} already exists`));
-    }
+    // Create tables
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS members (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        fullName VARCHAR(255) NOT NULL,
+        contactNumber VARCHAR(15) NOT NULL,
+        idNumber VARCHAR(50) NOT NULL,
+        schoolName VARCHAR(255) NOT NULL,
+        officeContact VARCHAR(15) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-    const members = db.collection('members');
-    await members.deleteMany({});
-    await members.insertMany([
-      { fullName: 'John Doe', contactNumber: '1234567890', idNumber: 'ID123456', schoolName: 'Springfield High', officeContact: '0987654321' },
-      { fullName: 'Jane Smith', contactNumber: '2345678901', idNumber: 'ID789012', schoolName: 'Riverside Academy', officeContact: '1122334455' },
-      { fullName: 'Alice Johnson', contactNumber: '3456789012', idNumber: 'ID345678', schoolName: 'Central School', officeContact: '2233445566' },
-    ]);
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS funeral_notices (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        yourName VARCHAR(255) NOT NULL,
+        idNumber VARCHAR(50) NOT NULL,
+        deceasedName VARCHAR(255) NOT NULL,
+        dependentName VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-    const tombstonePurchases = db.collection('tombstone_purchases');
-    await tombstonePurchases.deleteMany({});
-    await tombstonePurchases.insertMany([
-      { fullName: 'John Doe', contactNumber: '1234567890', idNumber: 'ID123456', schoolName: 'Springfield High', officeContact: '0987654321' },
-      { fullName: 'Jane Smith', contactNumber: '2345678901', idNumber: 'ID789012', schoolName: 'Riverside Academy', officeContact: '1122334455' },
-    ]);
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS contact_messages (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        contactNumber VARCHAR(15) NOT NULL,
+        message TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
 
-    console.log('Dummy data inserted');
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS survey_responses (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        satisfaction VARCHAR(50) NOT NULL,
+        addressed VARCHAR(50) NOT NULL,
+        responseTime VARCHAR(50) NOT NULL,
+        courtesy VARCHAR(50) NOT NULL,
+        helpful VARCHAR(50) NOT NULL,
+        expectations VARCHAR(50) NOT NULL,
+        suggestions TEXT,
+        recommend VARCHAR(50) NOT NULL,
+        difficulties TEXT,
+        overall VARCHAR(50) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS election_registrations (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        fullName VARCHAR(255) NOT NULL,
+        idNumber VARCHAR(50) NOT NULL,
+        contactNumber VARCHAR(15) NOT NULL,
+        uniqueId VARCHAR(9) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS news (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        text TEXT,
+        image_url VARCHAR(255),
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // Insert dummy data for members
+    await connection.query(`
+      INSERT IGNORE INTO members (fullName, contactNumber, idNumber, schoolName, officeContact) VALUES
+      ('John Doe', '1234567890', 'ID123456', 'Springfield High', '0987654321'),
+      ('Jane Smith', '2345678901', 'ID789012', 'Riverside Academy', '1122334455'),
+      ('Alice Johnson', '3456789012', 'ID345678', 'Central School', '2233445566')
+    `);
+
+    // Insert dummy data for news
+    await connection.query(`
+      INSERT IGNORE INTO news (text, image_url, created_at) VALUES
+      ('Community outreach program scheduled for next month.', NULL, '2025-05-01 10:00:00'),
+      (NULL, 'https://picsum.photos/800/600', '2025-05-02 12:00:00'),
+      ('Annual meeting highlights and updates.', 'https://picsum.photos/800/600?random=2', '2025-05-03 15:00:00')
+    `);
+
+    console.log('Database initialized with tables and dummy data');
+    connection.release();
   } catch (err) {
-    console.error('MongoDB connection failed:', err);
+    console.error('MySQL connection failed:', err.message);
     throw err;
   }
 }
 
-connectDB().catch((err) => {
-  console.error('Failed to initialize database:', err);
+initializeDB().catch((err) => {
+  console.error('Failed to initialize database:', err.message);
   process.exit(1);
 });
 
-// Test MongoDB connection endpoint
+// Test MySQL connection endpoint
 app.get('/api/test-db', async (req, res) => {
   try {
-    const db = client.db('btu_burial');
-    const collections = await db.listCollections().toArray();
-    res.json({ status: 'MongoDB connected', collections: collections.map((c) => c.name) });
+    const [rows] = await pool.query('SHOW TABLES');
+    res.json({ status: 'MySQL connected', tables: rows.map(row => Object.values(row)[0]) });
   } catch (err) {
-    console.error('Test DB error:', err);
-    res.status(500).json({ message: 'MongoDB connection error', error: err.message });
+    console.error('Test DB error:', err.message);
+    res.status(500).json({ message: 'MySQL connection error', error: err.message });
   }
 });
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'Server is running', mongodb: client.topology.isConnected() ? 'Connected' : 'Disconnected' });
+app.get('/api/health', async (req, res) => {
+  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'Server is running', mysql: 'Connected' });
+  } catch (err) {
+    console.error('Health check error:', err.message);
+    res.json({ status: 'Server is running', mysql: 'Disconnected' });
+  }
 });
 
 // Membership Join
@@ -83,51 +155,14 @@ app.post('/api/membership/join', async (req, res) => {
     return res.status(400).json({ message: 'All fields are required' });
   }
   try {
-    const db = client.db('btu_burial');
-    const members = db.collection('members');
-    const result = await members.insertOne({
-      fullName,
-      contactNumber,
-      idNumber: id,
-      schoolName,
-      officeContact,
-    });
-    console.log('Member added:', { id: result.insertedId, fullName });
+    const [result] = await pool.query(
+      'INSERT INTO members (fullName, contactNumber, idNumber, schoolName, officeContact) VALUES (?, ?, ?, ?, ?)',
+      [fullName, contactNumber, id, schoolName, officeContact]
+    );
+    console.log('Member added:', { id: result.insertId, fullName });
     res.json({ message: 'Thank you for joining BTU Burial. We will contact you within 48 hours.' });
   } catch (err) {
-    console.error('Error in /api/membership/join:', err);
-    res.status(500).json({ message: 'Database error', error: err.message });
-  }
-});
-
-// Membership Tombstone Package
-app.post('/api/membership/tombstone', async (req, res) => {
-  console.log('Received /api/membership/tombstone request:', req.body);
-  const { fullName, contactNumber, id, schoolName, officeContact } = req.body;
-  if (!fullName || !contactNumber || !id || !schoolName || !officeContact) {
-    console.log('Missing required fields:', req.body);
-    return res.status(400).json({ message: 'All fields are required' });
-  }
-  try {
-    const db = client.db('btu_burial');
-    const members = db.collection('members');
-    const member = await members.findOne({ idNumber: id });
-    if (!member) {
-      console.log('Member not found for idNumber:', id);
-      return res.status(400).json({ message: 'You must be a member to buy a tombstone package.' });
-    }
-    const tombstonePurchases = db.collection('tombstone_purchases');
-    const result = await tombstonePurchases.insertOne({
-      fullName,
-      contactNumber,
-      idNumber: id,
-      schoolName,
-      officeContact,
-    });
-    console.log('Tombstone purchase added:', { id: result.insertedId, fullName });
-    res.json({ message: 'Thank you for your purchase. We will contact you within 48 hours.' });
-  } catch (err) {
-    console.error('Error in /api/membership/tombstone:', err);
+    console.error('Error in /api/membership/join:', err.message);
     res.status(500).json({ message: 'Database error', error: err.message });
   }
 });
@@ -141,18 +176,14 @@ app.post('/api/funeral-notice', async (req, res) => {
     return res.status(400).json({ message: 'Required fields are missing' });
   }
   try {
-    const db = client.db('btu_burial');
-    const funeralNotices = db.collection('funeral_notices');
-    const result = await funeralNotices.insertOne({
-      yourName,
-      idNumber: id,
-      deceasedName,
-      dependentName,
-    });
-    console.log('Funeral notice added:', { id: result.insertedId, yourName });
+    const [result] = await pool.query(
+      'INSERT INTO funeral_notices (yourName, idNumber, deceasedName, dependentName) VALUES (?, ?, ?, ?)',
+      [yourName, id, deceasedName, dependentName || null]
+    );
+    console.log('Funeral notice added:', { id: result.insertId, yourName });
     res.json({ message: 'Thank you for submitting the funeral notice. We will contact you within 24 hours.' });
   } catch (err) {
-    console.error('Error in /api/funeral-notice:', err);
+    console.error('Error in /api/funeral-notice:', err.message);
     res.status(500).json({ message: 'Database error', error: err.message });
   }
 });
@@ -166,17 +197,14 @@ app.post('/api/contact', async (req, res) => {
     return res.status(400).json({ message: 'All fields are required' });
   }
   try {
-    const db = client.db('btu_burial');
-    const contactMessages = db.collection('contact_messages');
-    const result = await contactMessages.insertOne({
-      name,
-      contactNumber,
-      message,
-    });
-    console.log('Contact message added:', { id: result.insertedId, name });
+    const [result] = await pool.query(
+      'INSERT INTO contact_messages (name, contactNumber, message) VALUES (?, ?, ?)',
+      [name, contactNumber, message]
+    );
+    console.log('Contact message added:', { id: result.insertId, name });
     res.json({ message: 'Thank you for your message. We will contact you within 24 hours.' });
   } catch (err) {
-    console.error('Error in /api/contact:', err);
+    console.error('Error in /api/contact:', err.message);
     res.status(500).json({ message: 'Database error', error: err.message });
   }
 });
@@ -190,24 +218,14 @@ app.post('/api/survey', async (req, res) => {
     return res.status(400).json({ message: 'Required fields are missing' });
   }
   try {
-    const db = client.db('btu_burial');
-    const surveyResponses = db.collection('survey_responses');
-    const result = await surveyResponses.insertOne({
-      satisfaction,
-      addressed,
-      responseTime,
-      courtesy,
-      helpful,
-      expectations,
-      suggestions,
-      recommend,
-      difficulties,
-      overall,
-    });
-    console.log('Survey response added:', { id: result.insertedId });
+    const [result] = await pool.query(
+      'INSERT INTO survey_responses (satisfaction, addressed, responseTime, courtesy, helpful, expectations, suggestions, recommend, difficulties, overall) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [satisfaction, addressed, responseTime, courtesy, helpful, expectations, suggestions || null, recommend, difficulties || null, overall]
+    );
+    console.log('Survey response added:', { id: result.insertId });
     res.json({ message: 'Thank you for your feedback.' });
   } catch (err) {
-    console.error('Error in /api/survey:', err);
+    console.error('Error in /api/survey:', err.message);
     res.status(500).json({ message: 'Database error', error: err.message });
   }
 });
@@ -222,36 +240,43 @@ app.post('/api/election-reg', async (req, res) => {
   }
   const uniqueId = Math.random().toString(36).substr(2, 9);
   try {
-    const db = client.db('btu_burial');
-    const electionRegistrations = db.collection('election_registrations');
-    const result = await electionRegistrations.insertOne({
-      fullName,
-      idNumber: id,
-      contactNumber,
-      uniqueId,
-    });
-    console.log('Election registration added:', { id: result.insertedId, fullName, uniqueId });
+    const [result] = await pool.query(
+      'INSERT INTO election_registrations (fullName, idNumber, contactNumber, uniqueId) VALUES (?, ?, ?, ?)',
+      [fullName, id, contactNumber, uniqueId]
+    );
+    console.log('Election registration added:', { id: result.insertId, fullName, uniqueId });
     res.json({ message: `Thank you for registering. Your unique ID will be sent via SMS: ${uniqueId}` });
   } catch (err) {
-    console.error('Error in /api/election-reg:', err);
+    console.error('Error in /api/election-reg:', err.message);
     res.status(500).json({ message: 'Database error', error: err.message });
   }
 });
 
-// Check Membership (for membership.js tombstone validation)
+// Check Membership
 app.get('/api/members/check', async (req, res) => {
   console.log('Received /api/members/check request:', req.query);
   const { id } = req.query;
   try {
-    const db = client.db('btu_burial');
-    const members = db.collection('members');
-    const member = await members.findOne({ idNumber: id });
-    res.json({ exists: !!member });
+    const [rows] = await pool.query('SELECT * FROM members WHERE idNumber = ?', [id]);
+    res.json({ exists: rows.length > 0 });
   } catch (err) {
-    console.error('Error in /api/members/check:', err);
+    console.error('Error in /api/members/check:', err.message);
+    res.status(500).json({ message: 'Database error', error: err.message });
+  }
+});
+
+// Get News
+app.get('/api/news', async (req, res) => {
+  console.log('Received /api/news request');
+  try {
+    const [rows] = await pool.query('SELECT * FROM news ORDER BY created_at DESC');
+    console.log('News fetched:', rows);
+    res.json(rows || []); // Ensure an array is always returned
+  } catch (err) {
+    console.error('Error in /api/news:', err.message);
     res.status(500).json({ message: 'Database error', error: err.message });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
