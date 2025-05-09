@@ -1,11 +1,11 @@
 -- Drop the database if it already exists
-DROP DATABASE IF EXISTS btu_burial;
+DROP DATABASE IF EXISTS btuburia_btu;
 
 -- Create the database
-CREATE DATABASE btu_burial;
+CREATE DATABASE btuburia_btu;
 
 -- Select the database
-USE btu_burial;
+USE btuburia_btu;
 CREATE TABLE members (
   id INT AUTO_INCREMENT PRIMARY KEY,
   fullName VARCHAR(255) NOT NULL,
