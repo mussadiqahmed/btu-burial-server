@@ -95,7 +95,7 @@ const pool = mysql.createPool({
       )
     `);
 
-    // Dummy data (use IGNORE to prevent duplicate insert on restart)
+    // Dummy data for members (use IGNORE to prevent duplicates)
     await connection.query(`
       INSERT IGNORE INTO members (fullName, contactNumber, idNumber, schoolName, officeContact)
       VALUES
@@ -104,13 +104,28 @@ const pool = mysql.createPool({
       ('Alice Johnson', '3456789012', 'ID345678', 'Central School', '2233445566')
     `);
 
-    await connection.query(`
-      INSERT IGNORE INTO news (text, image_url, created_at)
-      VALUES
-      ('Community outreach program scheduled for next month.', NULL, '2025-05-01 10:00:00'),
-      (NULL, 'https://picsum.photos/800/600', '2025-05-02 12:00:00'),
-      ('Annual meeting highlights and updates.', 'https://picsum.photos/800/600?random=2', '2025-05-03 15:00:00')
-    `);
+    // Check if news table is empty before inserting dummy data
+    const [newsRows] = await connection.query('SELECT COUNT(*) as count FROM news');
+    if (newsRows[0].count === 0) {
+      await connection.query(`
+        INSERT INTO news (text, image_url, created_at)
+        VALUES
+        ('Community outreach program scheduled for next month.', NULL, '2025-05-01 10:00:00'),
+        (NULL, 'https://picsum.photos/800/600', '2025-05-02 12:00:00'),
+        ('Annual meeting highlights and updates.', 'https://picsum.photos/800/600?random=2', '2025-05-03 15:00:00'),
+        ('New community center opening soon.', NULL, '2025-05-04 09:00:00'),
+        (NULL, 'https://picsum.photos/800/600?random=3', '2025-05-05 14:00:00'),
+        ('Volunteer drive for local charity.', 'https://picsum.photos/800/600?random=4', '2025-05-06 11:00:00'),
+        ('Annual fundraiser announced.', NULL, '2025-05-07 16:00:00'),
+        (NULL, 'https://picsum.photos/800/600?random=5', '2025-05-08 10:00:00'),
+        ('Community cleanup event this weekend.', 'https://picsum.photos/800/600?random=6', '2025-05-09 13:00:00'),
+        ('Holiday celebration plans unveiled.', NULL, '2025-05-10 15:00:00'),
+        (NULL, 'https://picsum.photos/800/600?random=7', '2025-05-11 12:00:00')
+      `);
+      console.log('✅ Dummy news data inserted');
+    } else {
+      console.log('✅ News table already contains data, skipping dummy data insertion');
+    }
 
     console.log('✅ Database initialized with tables and dummy data');
     connection.release();
@@ -140,13 +155,32 @@ app.get('/api/test-db', async (req, res) => {
   }
 });
 
-// News Endpoint
+// News Endpoint with Pagination
 app.get('/api/news', async (req, res) => {
   console.log('Received /api/news request');
+  const page = parseInt(req.query.page) || 1;
+  const limit = 10;
+  const offset = (page - 1) * limit;
+
   try {
-    const [rows] = await pool.query('SELECT * FROM news ORDER BY created_at DESC');
-    console.log('News fetched:', rows);
-    res.json(rows);
+    const [rows] = await pool.query(
+      'SELECT * FROM news ORDER BY created_at DESC LIMIT ? OFFSET ?',
+      [limit, offset]
+    );
+    const [countResult] = await pool.query('SELECT COUNT(*) as total FROM news');
+    const totalItems = countResult[0].total;
+    const totalPages = Math.ceil(totalItems / limit);
+
+    console.log(`News fetched: ${rows.length} items, page ${page}, total pages ${totalPages}`);
+    res.json({
+      news: rows,
+      pagination: {
+        currentPage: page,
+        totalPages,
+        totalItems,
+        itemsPerPage: limit
+      }
+    });
   } catch (error) {
     console.error('Error fetching news:', error.message);
     res.status(500).json({ error: 'Failed to fetch news' });
