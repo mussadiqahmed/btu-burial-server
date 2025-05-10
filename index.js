@@ -1,6 +1,8 @@
 const express = require('express');
 const mysql = require('mysql2/promise');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -19,7 +21,49 @@ const pool = mysql.createPool({
   queueLimit: 0
 });
 
-// Initialize DB and create tables
+// Rate Limiter
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // Limit each IP to 100 requests
+});
+app.use('/api/admin', limiter);
+
+// reCAPTCHA Verification
+async function verifyRecaptcha(token) {
+  const secretKey = process.env.RECAPTCHA_SECRET_KEY; // Uses 6LeqszQrAAAAACS-3EzONS9ehu2nluVse56ITk-i from .env
+  try {
+    const response = await axios.post('https://www.google.com/recaptcha/api/siteverify', null, {
+      params: {
+        secret: secretKey,
+        response: token,
+      },
+    });
+    const { success, score } = response.data;
+    console.log('reCAPTCHA Verification:', { success, score });
+    return success && score >= 0.5;
+  } catch (error) {
+    console.error('reCAPTCHA verification error:', error.message);
+    return false;
+  }
+}
+
+// Input Sanitization
+function sanitizeInput(input) {
+  if (typeof input === 'string') {
+    return input.replace(/[<>'";]/g, '');
+  }
+  return input;
+}
+
+function sanitizeObject(obj) {
+  const sanitized = {};
+  for (const [key, value] of Object.entries(obj)) {
+    sanitized[key] = sanitizeInput(value);
+  }
+  return sanitized;
+}
+
+// Initialize DB
 (async function initializeDB() {
   try {
     const connection = await pool.getConnection();
@@ -33,6 +77,9 @@ const pool = mysql.createPool({
         idNumber VARCHAR(50) NOT NULL,
         schoolName VARCHAR(255) NOT NULL,
         officeContact VARCHAR(15) NOT NULL,
+        read_status ENUM('unread', 'read') DEFAULT 'unread',
+        admin_reply TEXT,
+        status ENUM('pending', 'done') DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -44,6 +91,9 @@ const pool = mysql.createPool({
         idNumber VARCHAR(50) NOT NULL,
         deceasedName VARCHAR(255) NOT NULL,
         dependentName VARCHAR(255),
+        read_status ENUM('unread', 'read') DEFAULT 'unread',
+        admin_reply TEXT,
+        status ENUM('pending', 'done') DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -54,6 +104,9 @@ const pool = mysql.createPool({
         name VARCHAR(255) NOT NULL,
         contactNumber VARCHAR(15) NOT NULL,
         message TEXT NOT NULL,
+        read_status ENUM('unread', 'read') DEFAULT 'unread',
+        admin_reply TEXT,
+        status ENUM('pending', 'done') DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -71,6 +124,7 @@ const pool = mysql.createPool({
         recommend VARCHAR(50) NOT NULL,
         difficulties TEXT,
         overall VARCHAR(50) NOT NULL,
+        read_status ENUM('unread', 'read') DEFAULT 'unread',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -82,6 +136,7 @@ const pool = mysql.createPool({
         idNumber VARCHAR(50) NOT NULL,
         contactNumber VARCHAR(15) NOT NULL,
         uniqueId VARCHAR(9) NOT NULL,
+        read_status ENUM('unread', 'read') DEFAULT 'unread',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -95,39 +150,7 @@ const pool = mysql.createPool({
       )
     `);
 
-    // Dummy data for members (use IGNORE to prevent duplicates)
-    await connection.query(`
-      INSERT IGNORE INTO members (fullName, contactNumber, idNumber, schoolName, officeContact)
-      VALUES
-      ('John Doe', '1234567890', 'ID123456', 'Springfield High', '0987654321'),
-      ('Jane Smith', '2345678901', 'ID789012', 'Riverside Academy', '1122334455'),
-      ('Alice Johnson', '3456789012', 'ID345678', 'Central School', '2233445566')
-    `);
-
-    // Check if news table is empty before inserting dummy data
-    const [newsRows] = await connection.query('SELECT COUNT(*) as count FROM news');
-    if (newsRows[0].count === 0) {
-      await connection.query(`
-        INSERT INTO news (text, image_url, created_at)
-        VALUES
-        ('Community outreach program scheduled for next month.', NULL, '2025-05-01 10:00:00'),
-        (NULL, 'https://picsum.photos/800/600', '2025-05-02 12:00:00'),
-        ('Annual meeting highlights and updates.', 'https://picsum.photos/800/600?random=2', '2025-05-03 15:00:00'),
-        ('New community center opening soon.', NULL, '2025-05-04 09:00:00'),
-        (NULL, 'https://picsum.photos/800/600?random=3', '2025-05-05 14:00:00'),
-        ('Volunteer drive for local charity.', 'https://picsum.photos/800/600?random=4', '2025-05-06 11:00:00'),
-        ('Annual fundraiser announced.', NULL, '2025-05-07 16:00:00'),
-        (NULL, 'https://picsum.photos/800/600?random=5', '2025-05-08 10:00:00'),
-        ('Community cleanup event this weekend.', 'https://picsum.photos/800/600?random=6', '2025-05-09 13:00:00'),
-        ('Holiday celebration plans unveiled.', NULL, '2025-05-10 15:00:00'),
-        (NULL, 'https://picsum.photos/800/600?random=7', '2025-05-11 12:00:00')
-      `);
-      console.log('✅ Dummy news data inserted');
-    } else {
-      console.log('✅ News table already contains data, skipping dummy data insertion');
-    }
-
-    console.log('✅ Database initialized with tables and dummy data');
+    console.log('✅ Database initialized');
     connection.release();
   } catch (err) {
     console.error('❌ Database initialization failed:', err.message);
@@ -141,17 +164,270 @@ app.get('/api/health', async (req, res) => {
     await pool.query('SELECT 1');
     res.json({ status: 'Server running', mysql: 'Connected' });
   } catch (err) {
-    res.json({ status: 'Server running', mysql: 'Disconnected' });
+    res.status(500).json({ status: 'Server running', mysql: 'Disconnected', error: err.message });
   }
 });
 
-// Test DB connection and list tables
-app.get('/api/test-db', async (req, res) => {
+// Dashboard Stats
+app.get('/api/admin/dashboard', async (req, res) => {
   try {
-    const [rows] = await pool.query('SHOW TABLES');
-    res.json({ tables: rows.map(row => Object.values(row)[0]) });
+    const [members] = await pool.query('SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM members');
+    const [funeralNotices] = await pool.query('SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM funeral_notices');
+    const [contactMessages] = await pool.query('SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM contact_messages');
+    const [surveyResponses] = await pool.query('SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM survey_responses');
+    const [electionRegistrations] = await pool.query('SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM election_registrations');
+    const [recent] = await pool.query(`
+      (SELECT 'members' as type, id, fullName as title, created_at FROM members ORDER BY created_at DESC LIMIT 5)
+      UNION
+      (SELECT 'funeral_notices' as type, id, deceasedName as title, created_at FROM funeral_notices ORDER BY created_at DESC LIMIT 5)
+      UNION
+      (SELECT 'contact_messages' as type, id, name as title, created_at FROM contact_messages ORDER BY created_at DESC LIMIT 5)
+      ORDER BY created_at DESC LIMIT 5
+    `);
+
+    res.json({
+      stats: {
+        members: members[0],
+        funeralNotices: funeralNotices[0],
+        contactMessages: contactMessages[0],
+        surveyResponses: surveyResponses[0],
+        electionRegistrations: electionRegistrations[0],
+      },
+      recent,
+    });
   } catch (err) {
-    res.status(500).json({ message: 'Error testing DB', error: err.message });
+    res.status(500).json({ message: 'Error fetching dashboard stats', error: err.message });
+  }
+});
+
+// Response Endpoints
+const responseEndpoints = [
+  {
+    name: 'members',
+    table: 'members',
+    fields: ['fullName', 'contactNumber', 'idNumber', 'schoolName', 'officeContact', 'read_status', 'admin_reply', 'status', 'created_at'],
+  },
+  {
+    name: 'funeral_notices',
+    table: 'funeral_notices',
+    fields: ['yourName', 'idNumber', 'deceasedName', 'dependentName', 'read_status', 'admin_reply', 'status', 'created_at'],
+  },
+  {
+    name: 'contact_messages',
+    table: 'contact_messages',
+    fields: ['name', 'contactNumber', 'message', 'read_status', 'admin_reply', 'status', 'created_at'],
+  },
+  {
+    name: 'survey_responses',
+    table: 'survey_responses',
+    fields: ['satisfaction', 'addressed', 'responseTime', 'courtesy', 'helpful', 'expectations', 'suggestions', 'recommend', 'difficulties', 'overall', 'read_status', 'created_at'],
+  },
+  {
+    name: 'election_registrations',
+    table: 'election_registrations',
+    fields: ['fullName', 'idNumber', 'contactNumber', 'uniqueId', 'read_status', 'created_at'],
+  },
+];
+
+responseEndpoints.forEach(({ name, table, fields }) => {
+  // Get Responses
+  app.get(`/api/admin/${name}`, async (req, res) => {
+    const { status = 'all', page = 1, limit = 10 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const where = status === 'all' ? '' : `WHERE read_status = ?`;
+    const params = status === 'all' ? [parseInt(limit), offset] : [status, parseInt(limit), offset];
+
+    try {
+      const [rows] = await pool.query(
+        `SELECT ${fields.join(', ')} FROM ${table} ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+        params
+      );
+      const [countResult] = await pool.query(
+        `SELECT COUNT(*) as total, SUM(read_status = 'unread') as unread FROM ${table}`
+      );
+      res.json({
+        data: rows,
+        pagination: {
+          currentPage: parseInt(page),
+          totalPages: Math.ceil(countResult[0].total / parseInt(limit)),
+          totalItems: countResult[0].total,
+          unread: countResult[0].unread,
+        },
+      });
+    } catch (err) {
+      res.status(500).json({ message: `Error fetching ${name}`, error: err.message });
+    }
+  });
+
+  // Update Read Status
+  app.patch(`/api/admin/${name}/:id/read`, async (req, res) => {
+    const { id } = req.params;
+    const { read_status } = req.body;
+    if (!['read', 'unread'].includes(read_status)) {
+      return res.status(400).json({ message: 'Invalid read_status' });
+    }
+
+    try {
+      await pool.query(`UPDATE ${table} SET read_status = ? WHERE id = ?`, [read_status, id]);
+      res.json({ message: 'Read status updated' });
+    } catch (err) {
+      res.status(500).json({ message: 'Error updating read status', error: err.message });
+    }
+  });
+
+  // Delete Response
+  app.delete(`/api/admin/${name}/:id`, async (req, res) => {
+    const { id } = req.params;
+    try {
+      await pool.query(`DELETE FROM ${table} WHERE id = ?`, [id]);
+      res.json({ message: 'Response deleted' });
+    } catch (err) {
+      res.status(500).json({ message: 'Error deleting response', error: err.message });
+    }
+  });
+
+  // Update Reply and Status (for members, funeral_notices, contact_messages)
+  if (['members', 'funeral_notices', 'contact_messages'].includes(name)) {
+    app.patch(`/api/admin/${name}/:id/reply`, async (req, res) => {
+      const { id } = req.params;
+      const { admin_reply, status } = sanitizeObject(req.body);
+      if (!status || !['pending', 'done'].includes(status)) {
+        return res.status(400).json({ message: 'Invalid status' });
+      }
+
+      try {
+        await pool.query(
+          `UPDATE ${table} SET admin_reply = ?, status = ?, read_status = 'read' WHERE id = ?`,
+          [admin_reply || null, status, id]
+        );
+        res.json({ message: 'Reply and status updated' });
+      } catch (err) {
+        res.status(500).json({ message: 'Error updating reply', error: err.message });
+      }
+    });
+  }
+});
+
+// Survey Analysis
+app.get('/api/admin/survey_analysis', async (req, res) => {
+  try {
+    const [satisfaction] = await pool.query(`
+      SELECT satisfaction, COUNT(*) as count 
+      FROM survey_responses 
+      GROUP BY satisfaction
+    `);
+    const [recommend] = await pool.query(`
+      SELECT recommend, COUNT(*) as count 
+      FROM survey_responses 
+      GROUP BY recommend
+    `);
+    res.json({ satisfaction, recommend });
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching survey analysis', error: err.message });
+  }
+});
+
+// Existing Endpoints with reCAPTCHA
+app.post('/api/membership/join', async (req, res) => {
+  const { recaptchaToken, fullName, contactNumber, id, schoolName, officeContact } = sanitizeObject(req.body);
+  if (!await verifyRecaptcha(recaptchaToken)) {
+    return res.status(400).json({ message: 'reCAPTCHA verification failed' });
+  }
+  if (!fullName || !contactNumber || !id || !schoolName || !officeContact) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
+
+  try {
+    await pool.query(
+      'INSERT INTO members (fullName, contactNumber, idNumber, schoolName, officeContact) VALUES (?, ?, ?, ?, ?)',
+      [fullName, contactNumber, id, schoolName, officeContact]
+    );
+    res.json({ message: 'Thank you for joining BTU Burial. We will contact you within 48 hours.' });
+  } catch (err) {
+    res.status(500).json({ message: 'Database error', error: err.message });
+  }
+});
+
+app.post('/api/funeral-notice', async (req, res) => {
+  const { recaptchaToken, yourName, id, deceasedName, dependentName } = sanitizeObject(req.body);
+  if (!await verifyRecaptcha(recaptchaToken)) {
+    return res.status(400).json({ message: 'reCAPTCHA verification failed' });
+  }
+  if (!yourName || !id || !deceasedName) {
+    return res.status(400).json({ message: 'Required fields are missing' });
+  }
+
+  try {
+    await pool.query(
+      'INSERT INTO funeral_notices (yourName, idNumber, deceasedName, dependentName) VALUES (?, ?, ?, ?)',
+      [yourName, id, deceasedName, dependentName || null]
+    );
+    res.json({ message: 'Thank you for submitting the funeral notice. We will contact you within 24 hours.' });
+  } catch (err) {
+    res.status(500).json({ message: 'Database error', error: err.message });
+  }
+});
+
+app.post('/api/contact', async (req, res) => {
+  const { recaptchaToken, name, contactNumber, message } = sanitizeObject(req.body);
+  if (!await verifyRecaptcha(recaptchaToken)) {
+    return res.status(400).json({ message: 'reCAPTCHA verification failed' });
+  }
+  if (!name || !contactNumber || !message) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
+
+  try {
+    await pool.query(
+      'INSERT INTO contact_messages (name, contactNumber, message) VALUES (?, ?, ?)',
+      [name, contactNumber, message]
+    );
+    res.json({ message: 'Thank you for your message. We will contact you within 24 hours.' });
+  } catch (err) {
+    res.status(500).json({ message: 'Database error', error: err.message });
+  }
+});
+
+app.post('/api/survey', async (req, res) => {
+  const { recaptchaToken, satisfaction, addressed, responseTime, courtesy, helpful, expectations, suggestions, recommend, difficulties, overall } = sanitizeObject(req.body);
+  if (!await verifyRecaptcha(recaptchaToken)) {
+    return res.status(400).json({ message: 'reCAPTCHA verification failed' });
+  }
+  if (!satisfaction || !addressed || !responseTime || !courtesy || !helpful || !expectations || !recommend || !overall) {
+    return res.status(400).json({ message: 'Required fields are missing' });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO survey_responses 
+      (satisfaction, addressed, responseTime, courtesy, helpful, expectations, suggestions, recommend, difficulties, overall) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [satisfaction, addressed, responseTime, courtesy, helpful, expectations, suggestions || null, recommend, difficulties || null, overall]
+    );
+    res.json({ message: 'Thank you for your feedback.' });
+  } catch (err) {
+    res.status(500).json({ message: 'Database error', error: err.message });
+  }
+});
+
+app.post('/api/election-reg', async (req, res) => {
+  const { recaptchaToken, fullName, id, contactNumber } = sanitizeObject(req.body);
+  if (!await verifyRecaptcha(recaptchaToken)) {
+    return res.status(400).json({ message: 'reCAPTCHA verification failed' });
+  }
+  if (!fullName || !id || !contactNumber) {
+    return res.status(400).json({ message: 'All fields are required' });
+  }
+
+  try {
+    const uniqueId = Math.random().toString(36).substr(2, 9).toUpperCase();
+    await pool.query(
+      'INSERT INTO election_registrations (fullName, idNumber, contactNumber, uniqueId) VALUES (?, ?, ?, ?)',
+      [fullName, id, contactNumber, uniqueId]
+    );
+    res.json({ message: 'Election registration completed.', uniqueId });
+  } catch (err) {
+    res.status(500).json({ message: 'Database error', error: err.message });
   }
 });
 
@@ -184,99 +460,6 @@ app.get('/api/news', async (req, res) => {
   } catch (error) {
     console.error('Error fetching news:', error.message);
     res.status(500).json({ error: 'Failed to fetch news' });
-  }
-});
-
-// Membership Join
-app.post('/api/membership/join', async (req, res) => {
-  const { fullName, contactNumber, id, schoolName, officeContact } = req.body;
-  if (!fullName || !contactNumber || !id || !schoolName || !officeContact) {
-    return res.status(400).json({ message: 'All fields are required' });
-  }
-
-  try {
-    await pool.query(
-      'INSERT INTO members (fullName, contactNumber, idNumber, schoolName, officeContact) VALUES (?, ?, ?, ?, ?)',
-      [fullName, contactNumber, id, schoolName, officeContact]
-    );
-    res.json({ message: 'Thank you for joining BTU Burial. We will contact you within 48 hours.' });
-  } catch (err) {
-    res.status(500).json({ message: 'Database error', error: err.message });
-  }
-});
-
-// Funeral Notice
-app.post('/api/funeral-notice', async (req, res) => {
-  const { yourName, id, deceasedName, dependentName } = req.body;
-  if (!yourName || !id || !deceasedName) {
-    return res.status(400).json({ message: 'Required fields are missing' });
-  }
-
-  try {
-    await pool.query(
-      'INSERT INTO funeral_notices (yourName, idNumber, deceasedName, dependentName) VALUES (?, ?, ?, ?)',
-      [yourName, id, deceasedName, dependentName || null]
-    );
-    res.json({ message: 'Thank you for submitting the funeral notice. We will contact you within 24 hours.' });
-  } catch (err) {
-    res.status(500).json({ message: 'Database error', error: err.message });
-  }
-});
-
-// Contact Message
-app.post('/api/contact', async (req, res) => {
-  const { name, contactNumber, message } = req.body;
-  if (!name || !contactNumber || !message) {
-    return res.status(400).json({ message: 'All fields are required' });
-  }
-
-  try {
-    await pool.query(
-      'INSERT INTO contact_messages (name, contactNumber, message) VALUES (?, ?, ?)',
-      [name, contactNumber, message]
-    );
-    res.json({ message: 'Thank you for your message. We will contact you within 24 hours.' });
-  } catch (err) {
-    res.status(500).json({ message: 'Database error', error: err.message });
-  }
-});
-
-// Survey Response
-app.post('/api/survey', async (req, res) => {
-  const { satisfaction, addressed, responseTime, courtesy, helpful, expectations, suggestions, recommend, difficulties, overall } = req.body;
-  if (!satisfaction || !addressed || !responseTime || !courtesy || !helpful || !expectations || !recommend || !overall) {
-    return res.status(400).json({ message: 'Required fields are missing' });
-  }
-
-  try {
-    await pool.query(
-      `INSERT INTO survey_responses 
-      (satisfaction, addressed, responseTime, courtesy, helpful, expectations, suggestions, recommend, difficulties, overall) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [satisfaction, addressed, responseTime, courtesy, helpful, expectations, suggestions || null, recommend, difficulties || null, overall]
-    );
-    res.json({ message: 'Thank you for your feedback.' });
-  } catch (err) {
-    res.status(500).json({ message: 'Database error', error: err.message });
-  }
-});
-
-// Election Registration
-app.post('/api/election-reg', async (req, res) => {
-  const { fullName, id, contactNumber } = req.body;
-  if (!fullName || !id || !contactNumber) {
-    return res.status(400).json({ message: 'All fields are required' });
-  }
-
-  try {
-    const uniqueId = Math.random().toString(36).substr(2, 9).toUpperCase();
-    await pool.query(
-      'INSERT INTO election_registrations (fullName, idNumber, contactNumber, uniqueId) VALUES (?, ?, ?, ?)',
-      [fullName, id, contactNumber, uniqueId]
-    );
-    res.json({ message: 'Election registration completed.', uniqueId });
-  } catch (err) {
-    res.status(500).json({ message: 'Database error', error: err.message });
   }
 });
 
