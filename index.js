@@ -2,6 +2,7 @@ const express = require("express");
 const mysql = require("mysql2/promise");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
+const bcrypt = require("bcrypt");
 require("dotenv").config();
 
 const app = express();
@@ -62,6 +63,15 @@ function sanitizeObject(obj) {
     console.log("✅ MySQL Connected");
 
     await connection.query(`
+      CREATE TABLE IF NOT EXISTS admin_users (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        username VARCHAR(50) NOT NULL UNIQUE,
+        password VARCHAR(255) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    await connection.query(`
       CREATE TABLE IF NOT EXISTS members (
         id INT AUTO_INCREMENT PRIMARY KEY,
         fullName VARCHAR(255) NOT NULL,
@@ -69,9 +79,9 @@ function sanitizeObject(obj) {
         idNumber VARCHAR(50) NOT NULL,
         schoolName VARCHAR(255) NOT NULL,
         officeContact VARCHAR(15) NOT NULL,
-        read_status ENUM("unread", "read") DEFAULT "unread",
+        read_status ENUM('unread', 'read') DEFAULT 'unread',
         admin_reply TEXT,
-        status ENUM("pending", "done") DEFAULT "pending",
+        status ENUM('pending', 'done') DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -83,9 +93,9 @@ function sanitizeObject(obj) {
         idNumber VARCHAR(50) NOT NULL,
         deceasedName VARCHAR(255) NOT NULL,
         dependentName VARCHAR(255),
-        read_status ENUM("unread", "read") DEFAULT "unread",
+        read_status ENUM('unread', 'read') DEFAULT 'unread',
         admin_reply TEXT,
-        status ENUM("pending", "done") DEFAULT "pending",
+        status ENUM('pending', 'done') DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -96,9 +106,9 @@ function sanitizeObject(obj) {
         name VARCHAR(255) NOT NULL,
         contactNumber VARCHAR(15) NOT NULL,
         message TEXT NOT NULL,
-        read_status ENUM("unread", "read") DEFAULT "unread",
+        read_status ENUM('unread', 'read') DEFAULT 'unread',
         admin_reply TEXT,
-        status ENUM("pending", "done") DEFAULT "pending",
+        status ENUM('pending', 'done') DEFAULT 'pending',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -116,7 +126,7 @@ function sanitizeObject(obj) {
         recommend VARCHAR(50) NOT NULL,
         difficulties TEXT,
         overall VARCHAR(50) NOT NULL,
-        read_status ENUM("unread", "read") DEFAULT "unread",
+        read_status ENUM('unread', 'read') DEFAULT 'unread',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -128,7 +138,7 @@ function sanitizeObject(obj) {
         idNumber VARCHAR(50) NOT NULL,
         contactNumber VARCHAR(15) NOT NULL,
         uniqueId VARCHAR(9) NOT NULL,
-        read_status ENUM("unread", "read") DEFAULT "unread",
+        read_status ENUM('unread', 'read') DEFAULT 'unread',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -149,6 +159,31 @@ function sanitizeObject(obj) {
     process.exit(1);
   }
 })();
+
+// Admin Login Endpoint
+app.post("/api/admin/login", async (req, res) => {
+  const { username, password } = sanitizeObject(req.body);
+  if (!username || !password) {
+    return res.status(400).json({ message: "Username and password required" });
+  }
+
+  try {
+    const [rows] = await pool.query("SELECT * FROM admin_users WHERE username = ?", [username]);
+    if (rows.length === 0) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    const user = rows[0];
+    const match = await bcrypt.compare(password, user.password);
+    if (!match) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    res.json({ message: "Login successful", user: { id: user.id, username: user.username } });
+  } catch (err) {
+    res.status(500).json({ message: "Server error", error: err.message });
+  }
+});
 
 // Health Check
 app.get("/api/health", async (req, res) => {
@@ -366,7 +401,7 @@ responseEndpoints.forEach(({ name, table, fields }) => {
 
       try {
         await pool.query(
-          `UPDATE ${table} SET admin_reply = ?, status = ?, read_status = "read" WHERE id = ?`,
+          `UPDATE ${table} SET admin_reply = ?, status = ?, read_status = 'read' WHERE id = ?`,
           [admin_reply || null, status, id]
         );
         res.json({ message: "Reply and status updated" });
