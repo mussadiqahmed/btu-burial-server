@@ -126,13 +126,9 @@ async function uploadToGoogleDrive(buffer, filename) {
       },
     });
 
-    // Get public URL
-    const file = await drive.files.get({
-      fileId: fileId,
-      fields: 'webContentLink',
-    });
-    console.log(`✅ Uploaded to Google Drive: ${file.data.webContentLink}`);
-    return file.data.webContentLink;
+    // Return just the file ID instead of the full URL
+    console.log(`✅ File uploaded to Google Drive with ID: ${fileId}`);
+    return fileId;
   } catch (err) {
     console.error(`❌ Error uploading to Google Drive:`, err.message, err.stack);
     throw err;
@@ -701,19 +697,26 @@ app.get("/api/news", async (req, res) => {
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   try {
+    // Get news items
     const [rows] = await pool.query(
       "SELECT * FROM news ORDER BY created_at DESC LIMIT ? OFFSET ?",
       [parseInt(limit), offset]
     );
     const [countResult] = await pool.query("SELECT COUNT(*) as total FROM news");
 
-    // Clean up old image URLs
-    rows.forEach(item => {
+    // Clean up old image URLs and update database
+    for (const item of rows) {
       if (item.image_url && item.image_url.startsWith('/uploads/news/')) {
-        console.warn(`⚠️ Old image_url detected: ${item.image_url} (ID: ${item.id})`);
+        console.warn(`Found old image URL: ${item.image_url}`);
+        // Update the database to remove the old URL
+        await pool.query(
+          "UPDATE news SET image_url = NULL WHERE id = ?",
+          [item.id]
+        );
+        // Update the item in our response
         item.image_url = null;
       }
-    });
+    }
     
     res.json({
       data: rows,
@@ -740,16 +743,11 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
   if (req.file) {
     const filename = `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`;
     try {
-      const driveUrl = await uploadToGoogleDrive(req.file.buffer, filename);
-      // Extract file ID from the Google Drive URL
-      const fileId = driveUrl.match(/[-\w]{25,}/)?.[0];
-      if (fileId) {
-        image_url = `/proxy-image/${fileId}`;
-        console.log(`✅ Image URL created: ${image_url}`);
-      } else {
-        console.error('❌ Failed to extract file ID from Google Drive URL');
-        return res.status(500).json({ message: "Failed to process uploaded image" });
-      }
+      // Get the file ID directly from uploadToGoogleDrive
+      const fileId = await uploadToGoogleDrive(req.file.buffer, filename);
+      // Store the proxy URL format in the database
+      image_url = `/proxy-image/${fileId}`;
+      console.log(`✅ Image URL created: ${image_url}`);
     } catch (err) {
       console.error(`❌ Failed to upload image to Google Drive:`, err.message, err.stack);
       return res.status(500).json({ 
@@ -874,6 +872,38 @@ app.get('/test-secrets', async (req, res) => {
     res.json({ success: true, client_email: JSON.parse(data).client_email });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Add a migration function to fix existing URLs
+app.post("/api/admin/fix-news-images", async (req, res) => {
+  try {
+    // Get all news items with old upload paths
+    const [news] = await pool.query(
+      "SELECT * FROM news WHERE image_url LIKE '/uploads/news/%'"
+    );
+
+    console.log(`Found ${news.length} items with old image paths`);
+
+    // Update each item to use null for image_url since old images are not accessible
+    for (const item of news) {
+      await pool.query(
+        "UPDATE news SET image_url = NULL WHERE id = ?",
+        [item.id]
+      );
+      console.log(`Updated news item ${item.id} to remove old image path`);
+    }
+
+    res.json({ 
+      message: "Successfully updated old image paths",
+      updatedCount: news.length
+    });
+  } catch (err) {
+    console.error("Error fixing news images:", err);
+    res.status(500).json({ 
+      message: "Error fixing news images", 
+      error: err.message 
+    });
   }
 });
 
