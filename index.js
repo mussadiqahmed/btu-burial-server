@@ -7,7 +7,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
 const events = require('events');
-require("dotenv").config();
+require("dotenv").config({ path: '/home/username/.env' }); // Updated: Secure .env path
 
 const app = express();
 app.use(cors());
@@ -63,11 +63,8 @@ function sanitizeObject(obj) {
 // Configure multer for image uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    const uploadDir = path.join(__dirname, 'uploads', 'news');
-    // Create directory if it doesn't exist
-    fs.promises.mkdir(uploadDir, { recursive: true })
-      .then(() => cb(null, uploadDir))
-      .catch(err => cb(err));
+    const uploadDir = path.join(__dirname, '../public_html/uploads/news'); // Updated: Store in public_html/uploads/news
+    cb(null, uploadDir);
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -95,7 +92,7 @@ const upload = multer({
 
 // Ensure upload directory exists and is writable
 (async function createUploadDir() {
-  const uploadDir = path.join(__dirname, 'uploads', 'news');
+  const uploadDir = path.join(__dirname, '../public_html/uploads/news'); // Updated: public_html/uploads/news
   try {
     await fs.mkdir(uploadDir, { recursive: true });
     // Test write permissions
@@ -110,7 +107,7 @@ const upload = multer({
 })();
 
 // Serve uploaded files with proper MIME types
-app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+app.use('/uploads', express.static(path.join(__dirname, '../public_html/uploads'), { // Updated: Serve from public_html/uploads
   setHeaders: (res, path) => {
     if (path.endsWith('.jpg') || path.endsWith('.jpeg')) {
       res.setHeader('Content-Type', 'image/jpeg');
@@ -712,7 +709,7 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
   console.log('Received news post request:', { body: req.body, file: req.file });
   
   const { text } = req.body;
-  const image_url = req.file ? `/uploads/news/${req.file.filename}` : null;
+  const image_url = req.file ? `https://btuburial.co.bw/uploads/news/${req.file.filename}` : null; // Updated: Store full URL
 
   if (!text && !image_url) {
     console.error('News post validation failed: no text or image provided');
@@ -742,7 +739,7 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
     // If there was an error and we uploaded an image, delete it
     if (image_url) {
       try {
-        const filePath = path.join(__dirname, 'uploads', 'news', path.basename(image_url));
+        const filePath = path.join(__dirname, '../public_html/uploads/news', path.basename(image_url)); // Updated: Correct path
         await fs.unlink(filePath);
         console.log('Cleaned up uploaded file after error:', filePath);
       } catch (unlinkErr) {
@@ -771,7 +768,9 @@ app.delete("/api/news/:id", async (req, res) => {
     // Delete the image file if it exists
     if (news[0].image_url) {
       try {
-        await fs.unlink(path.join(__dirname, news[0].image_url));
+        const filePath = path.join(__dirname, '../public_html/uploads/news', path.basename(news[0].image_url)); // Updated: Correct path
+        await fs.unlink(filePath);
+        console.log('Deleted image file:', filePath);
       } catch (unlinkErr) {
         console.error("Error deleting image file:", unlinkErr);
       }
