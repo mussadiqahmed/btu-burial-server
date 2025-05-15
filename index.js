@@ -134,7 +134,7 @@ async function uploadToGoogleDrive(buffer, filename) {
     console.log(`✅ Uploaded to Google Drive: ${file.data.webContentLink}`);
     return file.data.webContentLink;
   } catch (err) {
-    console.error(`❌ Error uploading to Google Drive:`, err);
+    console.error(`❌ Error uploading to Google Drive:`, err.message, err.stack);
     throw err;
   }
 }
@@ -699,6 +699,13 @@ app.get("/api/news", async (req, res) => {
       [parseInt(limit), offset]
     );
     const [countResult] = await pool.query("SELECT COUNT(*) as total FROM news");
+
+    // Check for invalid image_url values
+    rows.forEach(item => {
+      if (item.image_url && item.image_url.startsWith('/uploads/news/')) {
+        console.warn(`⚠️ Invalid image_url detected: ${item.image_url} (ID: ${item.id})`);
+      }
+    });
     
     res.json({
       data: rows,
@@ -709,7 +716,7 @@ app.get("/api/news", async (req, res) => {
       }
     });
   } catch (err) {
-    console.error("Error fetching news:", err);
+    console.error("Error fetching news:", err.message);
     res.status(500).json({ message: "Error fetching news", error: err.message });
   }
 });
@@ -728,8 +735,11 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
       image_url = await uploadToGoogleDrive(req.file.buffer, filename);
       console.log(`✅ Image uploaded to Google Drive: ${image_url}`);
     } catch (err) {
-      console.error(`❌ Failed to upload image to Google Drive:`, err);
-      return res.status(500).json({ message: "Failed to upload image to Google Drive", error: err.message });
+      console.error(`❌ Failed to upload image to Google Drive:`, err.message, err.stack);
+      return res.status(500).json({ 
+        message: "Failed to upload image to Google Drive", 
+        error: err.message 
+      });
     }
   }
 
@@ -749,7 +759,7 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
       news: newNews[0]
     });
   } catch (err) {
-    console.error("Error adding news:", err);
+    console.error("Error adding news:", err.message, err.stack);
     res.status(500).json({ 
       message: "Error adding news", 
       error: err.message,
@@ -767,7 +777,7 @@ app.delete("/api/news/:id", async (req, res) => {
       return res.status(404).json({ message: "News not found" });
     }
 
-    if (news[0].image_url) {
+    if (news[0].image_url && !news[0].image_url.startsWith('/uploads/news/')) {
       try {
         const fileId = news[0].image_url.match(/[-\w]{25,}/);
         if (fileId) {
@@ -776,7 +786,7 @@ app.delete("/api/news/:id", async (req, res) => {
           console.log(`Deleted Google Drive file: ${fileId[0]}`);
         }
       } catch (deleteErr) {
-        console.error("Error deleting Google Drive file (may not exist):", deleteErr);
+        console.error("Error deleting Google Drive file (may not exist):", deleteErr.message);
       }
     }
 
@@ -799,8 +809,28 @@ app.get('/proxy-image/:fileId', async (req, res) => {
     );
     response.data.pipe(res);
   } catch (err) {
-    console.error('Error proxying image:', err);
+    console.error('Error proxying image:', err.message);
     res.status(500).send('Error fetching image');
+  }
+});
+
+// Debugging endpoints
+app.get('/test-drive', async (req, res) => {
+  try {
+    const drive = await drivePromise;
+    const response = await drive.files.list({ pageSize: 1 });
+    res.json({ success: true, files: response.data.files });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/test-secrets', async (req, res) => {
+  try {
+    const data = await fs.readFile('/etc/secrets/service-account.json', 'utf8');
+    res.json({ success: true, client_email: JSON.parse(data).client_email });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
