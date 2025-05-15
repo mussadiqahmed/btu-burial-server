@@ -139,6 +139,13 @@ async function uploadToGoogleDrive(buffer, filename) {
   }
 }
 
+// Function to get direct Google Drive URL
+function getGoogleDriveDirectUrl(webContentLink) {
+  if (!webContentLink) return null;
+  // Convert the 'download' URL to a 'view' URL
+  return webContentLink.replace('&export=download', '').replace('download', 'view');
+}
+
 // Initialize DB
 (async function initializeDB() {
   try {
@@ -700,10 +707,11 @@ app.get("/api/news", async (req, res) => {
     );
     const [countResult] = await pool.query("SELECT COUNT(*) as total FROM news");
 
-    // Check for invalid image_url values
+    // Clean up old image URLs
     rows.forEach(item => {
       if (item.image_url && item.image_url.startsWith('/uploads/news/')) {
-        console.warn(`⚠️ Invalid image_url detected: ${item.image_url} (ID: ${item.id})`);
+        console.warn(`⚠️ Old image_url detected: ${item.image_url} (ID: ${item.id})`);
+        item.image_url = null;
       }
     });
     
@@ -732,8 +740,16 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
   if (req.file) {
     const filename = `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`;
     try {
-      image_url = await uploadToGoogleDrive(req.file.buffer, filename);
-      console.log(`✅ Image uploaded to Google Drive: ${image_url}`);
+      const driveUrl = await uploadToGoogleDrive(req.file.buffer, filename);
+      // Extract file ID from the Google Drive URL
+      const fileId = driveUrl.match(/[-\w]{25,}/)?.[0];
+      if (fileId) {
+        image_url = `/proxy-image/${fileId}`;
+        console.log(`✅ Image URL created: ${image_url}`);
+      } else {
+        console.error('❌ Failed to extract file ID from Google Drive URL');
+        return res.status(500).json({ message: "Failed to process uploaded image" });
+      }
     } catch (err) {
       console.error(`❌ Failed to upload image to Google Drive:`, err.message, err.stack);
       return res.status(500).json({ 
@@ -801,12 +817,39 @@ app.delete("/api/news/:id", async (req, res) => {
 // Proxy endpoint for Google Drive images (to handle CORS)
 app.get('/proxy-image/:fileId', async (req, res) => {
   const { fileId } = req.params;
+  
+  if (!fileId) {
+    console.error('No fileId provided');
+    return res.status(400).send('File ID is required');
+  }
+
   try {
     const drive = await drivePromise;
-    const response = await drive.files.get(
-      { fileId, alt: 'media' },
-      { responseType: 'stream' }
-    );
+    
+    // First get the file metadata to verify it exists and is an image
+    const file = await drive.files.get({
+      fileId: fileId,
+      fields: 'id, mimeType, webContentLink'
+    });
+
+    if (!file.data.mimeType?.startsWith('image/')) {
+      console.error(`Invalid file type: ${file.data.mimeType}`);
+      return res.status(400).send('Not an image file');
+    }
+
+    // Get the file content
+    const response = await drive.files.get({
+      fileId: fileId,
+      alt: 'media'
+    }, {
+      responseType: 'stream'
+    });
+
+    // Set appropriate headers
+    res.setHeader('Content-Type', file.data.mimeType);
+    res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
+
+    // Pipe the response
     response.data.pipe(res);
   } catch (err) {
     console.error('Error proxying image:', err.message);
