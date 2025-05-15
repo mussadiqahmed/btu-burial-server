@@ -6,6 +6,7 @@ const bcrypt = require("bcrypt");
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
+const events = require('events');
 require("dotenv").config();
 
 const app = express();
@@ -62,7 +63,11 @@ function sanitizeObject(obj) {
 // Configure multer for image uploads
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, path.join(__dirname, '../uploads/news'));
+    const uploadDir = path.join(__dirname, 'uploads', 'news');
+    // Create directory if it doesn't exist
+    fs.promises.mkdir(uploadDir, { recursive: true })
+      .then(() => cb(null, uploadDir))
+      .catch(err => cb(err));
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
@@ -76,25 +81,46 @@ const upload = multer({
     fileSize: 5 * 1024 * 1024 // 5MB limit
   },
   fileFilter: function (req, file, cb) {
-    if (!file.originalname.match(/\.(jpg|jpeg|png|gif)$/)) {
-      return cb(new Error('Only image files are allowed!'), false);
+    const allowedTypes = /jpeg|jpg|png|gif/;
+    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedTypes.test(file.mimetype);
+
+    if (extname && mimetype) {
+      return cb(null, true);
+    } else {
+      cb(new Error('Only image files (jpg, jpeg, png, gif) are allowed!'));
     }
-    cb(null, true);
   }
 });
 
-// Ensure upload directory exists
+// Ensure upload directory exists and is writable
 (async function createUploadDir() {
+  const uploadDir = path.join(__dirname, 'uploads', 'news');
   try {
-    await fs.mkdir(path.join(__dirname, '../uploads/news'), { recursive: true });
-    console.log('✅ Upload directory created');
+    await fs.mkdir(uploadDir, { recursive: true });
+    // Test write permissions
+    const testFile = path.join(uploadDir, '.test');
+    await fs.writeFile(testFile, '');
+    await fs.unlink(testFile);
+    console.log('✅ Upload directory created and writable');
   } catch (err) {
-    console.error('❌ Error creating upload directory:', err);
+    console.error('❌ Error with upload directory:', err);
+    process.exit(1); // Exit if we can't write to the upload directory
   }
 })();
 
-// Serve uploaded files
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// Serve uploaded files with proper MIME types
+app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.jpg') || path.endsWith('.jpeg')) {
+      res.setHeader('Content-Type', 'image/jpeg');
+    } else if (path.endsWith('.png')) {
+      res.setHeader('Content-Type', 'image/png');
+    } else if (path.endsWith('.gif')) {
+      res.setHeader('Content-Type', 'image/gif');
+    }
+  }
+}));
 
 // Initialize DB
 (async function initializeDB() {
@@ -662,8 +688,14 @@ app.get("/api/news", async (req, res) => {
     );
     const [countResult] = await pool.query("SELECT COUNT(*) as total FROM news");
     
+    console.log('Fetched news:', { rows, pagination: {
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(countResult[0].total / parseInt(limit)),
+      totalItems: countResult[0].total
+    }});
+    
     res.json({
-      data: rows,
+      news: rows,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(countResult[0].total / parseInt(limit)),
@@ -671,16 +703,19 @@ app.get("/api/news", async (req, res) => {
       }
     });
   } catch (err) {
-    console.error("Error fetching news:", err.message);
+    console.error("Error fetching news:", err);
     res.status(500).json({ message: "Error fetching news", error: err.message });
   }
 });
 
 app.post("/api/news", upload.single('image'), async (req, res) => {
-  const { text } = sanitizeObject(req.body);
+  console.log('Received news post request:', { body: req.body, file: req.file });
+  
+  const { text } = req.body;
   const image_url = req.file ? `/uploads/news/${req.file.filename}` : null;
 
   if (!text && !image_url) {
+    console.error('News post validation failed: no text or image provided');
     return res.status(400).json({ message: "Either text or image is required" });
   }
 
@@ -689,6 +724,8 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
       "INSERT INTO news (text, image_url) VALUES (?, ?)",
       [text || null, image_url]
     );
+    
+    console.log('News inserted successfully:', { id: result.insertId, text, image_url });
     
     const [newNews] = await pool.query(
       "SELECT * FROM news WHERE id = ?",
@@ -700,16 +737,24 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
       news: newNews[0]
     });
   } catch (err) {
+    console.error("Error adding news:", err);
+    
     // If there was an error and we uploaded an image, delete it
     if (image_url) {
       try {
-        await fs.unlink(path.join(__dirname, image_url));
+        const filePath = path.join(__dirname, 'uploads', 'news', path.basename(image_url));
+        await fs.unlink(filePath);
+        console.log('Cleaned up uploaded file after error:', filePath);
       } catch (unlinkErr) {
         console.error("Error deleting uploaded file:", unlinkErr);
       }
     }
-    console.error("Error adding news:", err.message);
-    res.status(500).json({ message: "Error adding news", error: err.message });
+    
+    res.status(500).json({ 
+      message: "Error adding news", 
+      error: err.message,
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 });
 
