@@ -237,6 +237,7 @@ app.get("/api/admin/dashboard", async (req, res) => {
       recent,
     });
   } catch (err) {
+    console.error("Error fetching dashboard stats:", err.message);
     res.status(500).json({
       message: "Error fetching dashboard stats",
       error: err.message,
@@ -331,7 +332,7 @@ responseEndpoints.forEach(({ name, table, fields }) => {
 
     try {
       const [rows] = await pool.query(
-        `SELECT ${fields.join(", ")} FROM ${table} ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+        `SELECT ${fields.join(", ")}, id FROM ${table} ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
         params
       );
       const [countResult] = await pool.query(
@@ -347,6 +348,7 @@ responseEndpoints.forEach(({ name, table, fields }) => {
         },
       });
     } catch (err) {
+      console.error(`Error fetching ${name}:`, err.message);
       res.status(500).json({
         message: `Error fetching ${name}`,
         error: err.message,
@@ -363,12 +365,17 @@ responseEndpoints.forEach(({ name, table, fields }) => {
     }
 
     try {
-      await pool.query(`UPDATE ${table} SET read_status = ? WHERE id = ?`, [
-        read_status,
-        id,
-      ]);
+      const [result] = await pool.query(
+        `UPDATE ${table} SET read_status = ? WHERE id = ?`,
+        [read_status, id]
+      );
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: `Record not found in ${table}` });
+      }
+      console.log(`Updated read_status for ${table} id=${id} to ${read_status}`);
       res.json({ message: "Read status updated" });
     } catch (err) {
+      console.error(`Error updating read_status for ${table} id=${id}:`, err.message);
       res.status(500).json({
         message: "Error updating read status",
         error: err.message,
@@ -380,9 +387,14 @@ responseEndpoints.forEach(({ name, table, fields }) => {
   app.delete(`/api/admin/${name}/:id`, async (req, res) => {
     const { id } = req.params;
     try {
-      await pool.query(`DELETE FROM ${table} WHERE id = ?`, [id]);
+      const [result] = await pool.query(`DELETE FROM ${table} WHERE id = ?`, [id]);
+      if (result.affectedRows === 0) {
+        return res.status(404).json({ message: `Record not found in ${table}` });
+      }
+      console.log(`Deleted record from ${table} id=${id}`);
       res.json({ message: "Response deleted" });
     } catch (err) {
+      console.error(`Error deleting from ${table} id=${id}:`, err.message);
       res.status(500).json({
         message: "Error deleting response",
         error: err.message,
@@ -400,12 +412,17 @@ responseEndpoints.forEach(({ name, table, fields }) => {
       }
 
       try {
-        await pool.query(
+        const [result] = await pool.query(
           `UPDATE ${table} SET admin_reply = ?, status = ?, read_status = 'read' WHERE id = ?`,
           [admin_reply || null, status, id]
         );
+        if (result.affectedRows === 0) {
+          return res.status(404).json({ message: `Record not found in ${table}` });
+        }
+        console.log(`Updated reply and status for ${table} id=${id}`);
         res.json({ message: "Reply and status updated" });
       } catch (err) {
+        console.error(`Error updating reply for ${table} id=${id}:`, err.message);
         res.status(500).json({
           message: "Error updating reply",
           error: err.message,
@@ -430,6 +447,7 @@ app.get("/api/admin/survey_analysis", async (req, res) => {
     `);
     res.json({ satisfaction, recommend });
   } catch (err) {
+    console.error("Error fetching survey analysis:", err.message);
     res.status(500).json({
       message: "Error fetching survey analysis",
       error: err.message,
@@ -454,6 +472,7 @@ app.post("/api/membership/join", async (req, res) => {
       message: "Thank you for joining BTU Burial. We will contact you within 48 hours.",
     });
   } catch (err) {
+    console.error("Error inserting member:", err.message);
     res.status(500).json({ message: "Database error", error: err.message });
   }
 });
@@ -474,6 +493,7 @@ app.post("/api/funeral-notice", async (req, res) => {
         "Thank you for submitting the funeral notice. We will contact you within 24 hours.",
     });
   } catch (err) {
+    console.error("Error inserting funeral notice:", err.message);
     res.status(500).json({ message: "Database error", error: err.message });
   }
 });
@@ -493,6 +513,7 @@ app.post("/api/contact", async (req, res) => {
       message: "Thank you for your message. We will contact you within 24 hours.",
     });
   } catch (err) {
+    console.error("Error inserting contact message:", err.message);
     res.status(500).json({ message: "Database error", error: err.message });
   }
 });
@@ -543,6 +564,7 @@ app.post("/api/survey", async (req, res) => {
     );
     res.json({ message: "Thank you for your feedback." });
   } catch (err) {
+    console.error("Error inserting survey response:", err.message);
     res.status(500).json({ message: "Database error", error: err.message });
   }
 });
@@ -561,6 +583,7 @@ app.post("/api/election-reg", async (req, res) => {
     );
     res.json({ message: "Election registration completed.", uniqueId });
   } catch (err) {
+    console.error("Error inserting election registration:", err.message);
     res.status(500).json({ message: "Database error", error: err.message });
   }
 });
