@@ -360,25 +360,47 @@ responseEndpoints.forEach(({ name, table, fields }) => {
   app.patch(`/api/admin/${name}/:id/read`, async (req, res) => {
     const { id } = req.params;
     const { read_status } = req.body;
+    
+    console.log(`Attempting to update read_status for ${table} id=${id} to ${read_status}`);
+    
     if (!["read", "unread"].includes(read_status)) {
+      console.error(`Invalid read_status value: ${read_status}`);
       return res.status(400).json({ message: "Invalid read_status" });
     }
 
     try {
+      console.log(`Executing query: UPDATE ${table} SET read_status = ? WHERE id = ?`, [read_status, id]);
+      
       const [result] = await pool.query(
         `UPDATE ${table} SET read_status = ? WHERE id = ?`,
         [read_status, id]
       );
+      
+      console.log(`Query result:`, result);
+      
       if (result.affectedRows === 0) {
+        console.error(`No record found in ${table} with id=${id}`);
         return res.status(404).json({ message: `Record not found in ${table}` });
       }
-      console.log(`Updated read_status for ${table} id=${id} to ${read_status}`);
-      res.json({ message: "Read status updated" });
+      
+      // Fetch the updated record to confirm changes
+      const [updatedRecord] = await pool.query(
+        `SELECT * FROM ${table} WHERE id = ?`,
+        [id]
+      );
+      
+      console.log(`Updated record:`, updatedRecord[0]);
+      
+      res.json({ 
+        message: "Read status updated",
+        record: updatedRecord[0]
+      });
     } catch (err) {
-      console.error(`Error updating read_status for ${table} id=${id}:`, err.message);
+      console.error(`Error updating read_status for ${table} id=${id}:`, err);
       res.status(500).json({
         message: "Error updating read status",
         error: err.message,
+        details: err.stack
       });
     }
   });
