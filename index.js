@@ -3,6 +3,9 @@ const mysql = require("mysql2/promise");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const bcrypt = require("bcrypt");
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs').promises;
 require("dotenv").config();
 
 const app = express();
@@ -55,6 +58,43 @@ function sanitizeObject(obj) {
   }
   return sanitized;
 }
+
+// Configure multer for image uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/news/');
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'news-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: function (req, file, cb) {
+    if (!file.originalname.match(/\.(jpg|jpeg|png|gif)$/)) {
+      return cb(new Error('Only image files are allowed!'), false);
+    }
+    cb(null, true);
+  }
+});
+
+// Ensure upload directory exists
+(async function createUploadDir() {
+  try {
+    await fs.mkdir('uploads/news', { recursive: true });
+    console.log('✅ Upload directory created');
+  } catch (err) {
+    console.error('❌ Error creating upload directory:', err);
+  }
+})();
+
+// Serve uploaded files
+app.use('/uploads', express.static('uploads'));
 
 // Initialize DB
 (async function initializeDB() {
@@ -610,37 +650,95 @@ app.post("/api/election-reg", async (req, res) => {
   }
 });
 
-// News Endpoint with Pagination
-app.get("/api/news", async (req, res) => {
-  console.log("Received /api/news request");
+// News Management Endpoints
+app.post('/api/news', upload.single('image'), async (req, res) => {
+  try {
+    const { text } = req.body;
+    const image_url = req.file ? `/uploads/news/${req.file.filename}` : null;
+
+    if (!text && !image_url) {
+      return res.status(400).json({ message: 'Either text or image is required' });
+    }
+
+    const [result] = await pool.query(
+      'INSERT INTO news (text, image_url) VALUES (?, ?)',
+      [text || null, image_url]
+    );
+
+    res.json({
+      message: 'News added successfully',
+      news: {
+        id: result.insertId,
+        text,
+        image_url,
+        created_at: new Date()
+      }
+    });
+  } catch (err) {
+    console.error('Error adding news:', err);
+    res.status(500).json({ message: 'Error adding news', error: err.message });
+  }
+});
+
+app.delete('/api/news/:id', async (req, res) => {
+  const { id } = req.params;
+  try {
+    // Get the image URL before deleting
+    const [news] = await pool.query('SELECT image_url FROM news WHERE id = ?', [id]);
+    
+    if (news.length > 0 && news[0].image_url) {
+      // Remove the image file
+      const imagePath = path.join(__dirname, news[0].image_url);
+      try {
+        await fs.unlink(imagePath);
+      } catch (err) {
+        console.error('Error deleting image file:', err);
+      }
+    }
+
+    const [result] = await pool.query('DELETE FROM news WHERE id = ?', [id]);
+    
+    if (result.affectedRows === 0) {
+      return res.status(404).json({ message: 'News not found' });
+    }
+
+    res.json({ message: 'News deleted successfully' });
+  } catch (err) {
+    console.error('Error deleting news:', err);
+    res.status(500).json({ message: 'Error deleting news', error: err.message });
+  }
+});
+
+// Update the existing news endpoint to include pagination
+app.get('/api/news', async (req, res) => {
   const page = parseInt(req.query.page) || 1;
   const limit = 10;
   const offset = (page - 1) * limit;
 
   try {
     const [rows] = await pool.query(
-      "SELECT * FROM news ORDER BY created_at DESC LIMIT ? OFFSET ?",
+      'SELECT * FROM news ORDER BY created_at DESC LIMIT ? OFFSET ?',
       [limit, offset]
     );
-    const [countResult] = await pool.query("SELECT COUNT(*) as total FROM news");
+    const [countResult] = await pool.query('SELECT COUNT(*) as total FROM news');
     const totalItems = countResult[0].total;
     const totalPages = Math.ceil(totalItems / limit);
 
-    console.log(
-      `News fetched: ${rows.length} items, page ${page}, total pages ${totalPages}`
-    );
     res.json({
-      news: rows,
+      news: rows.map(item => ({
+        ...item,
+        image_url: item.image_url ? `${process.env.API_URL || ''}${item.image_url}` : null
+      })),
       pagination: {
         currentPage: page,
         totalPages,
         totalItems,
         itemsPerPage: limit,
-      },
+      }
     });
   } catch (err) {
-    console.error("Error fetching news:", err.message);
-    res.status(500).json({ error: "Failed to fetch news" });
+    console.error('Error fetching news:', err);
+    res.status(500).json({ message: 'Error fetching news', error: err.message });
   }
 });
 
