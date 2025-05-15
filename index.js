@@ -651,98 +651,97 @@ app.post("/api/election-reg", async (req, res) => {
 });
 
 // News Management Endpoints
-app.post('/api/news', upload.single('image'), async (req, res) => {
-  try {
-    const { text } = req.body;
-    const image_url = req.file ? `/uploads/news/${req.file.filename}` : null;
-
-    if (!text && !image_url) {
-      return res.status(400).json({ message: 'Either text or image is required' });
-    }
-
-    const [result] = await pool.query(
-      'INSERT INTO news (text, image_url) VALUES (?, ?)',
-      [text || null, image_url]
-    );
-
-    res.json({
-      message: 'News added successfully',
-      news: {
-        id: result.insertId,
-        text,
-        image_url,
-        created_at: new Date()
-      }
-    });
-  } catch (err) {
-    console.error('Error adding news:', err);
-    res.status(500).json({ message: 'Error adding news', error: err.message });
-  }
-});
-
-app.delete('/api/news/:id', async (req, res) => {
-  const { id } = req.params;
-  try {
-    // Get the image URL before deleting
-    const [news] = await pool.query('SELECT image_url FROM news WHERE id = ?', [id]);
-    
-    if (news.length > 0 && news[0].image_url) {
-      // Remove the image file
-      const imagePath = path.join(__dirname, news[0].image_url);
-      try {
-        await fs.unlink(imagePath);
-      } catch (err) {
-        console.error('Error deleting image file:', err);
-      }
-    }
-
-    const [result] = await pool.query('DELETE FROM news WHERE id = ?', [id]);
-    
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ message: 'News not found' });
-    }
-
-    res.json({ message: 'News deleted successfully' });
-  } catch (err) {
-    console.error('Error deleting news:', err);
-    res.status(500).json({ message: 'Error deleting news', error: err.message });
-  }
-});
-
-// Update the existing news endpoint to include pagination
-app.get('/api/news', async (req, res) => {
-  const page = parseInt(req.query.page) || 1;
-  const limit = 10;
-  const offset = (page - 1) * limit;
+app.get("/api/news", async (req, res) => {
+  const { page = 1, limit = 10 } = req.query;
+  const offset = (parseInt(page) - 1) * parseInt(limit);
 
   try {
     const [rows] = await pool.query(
-      'SELECT * FROM news ORDER BY created_at DESC LIMIT ? OFFSET ?',
-      [limit, offset]
+      "SELECT * FROM news ORDER BY created_at DESC LIMIT ? OFFSET ?",
+      [parseInt(limit), offset]
     );
-    const [countResult] = await pool.query('SELECT COUNT(*) as total FROM news');
-    const totalItems = countResult[0].total;
-    const totalPages = Math.ceil(totalItems / limit);
-
+    const [countResult] = await pool.query("SELECT COUNT(*) as total FROM news");
+    
     res.json({
-      news: rows.map(item => ({
-        ...item,
-        image_url: item.image_url ? `${process.env.API_URL || ''}${item.image_url}` : null
-      })),
+      data: rows,
       pagination: {
-        currentPage: page,
-        totalPages,
-        totalItems,
-        itemsPerPage: limit,
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(countResult[0].total / parseInt(limit)),
+        totalItems: countResult[0].total
       }
     });
   } catch (err) {
-    console.error('Error fetching news:', err);
-    res.status(500).json({ message: 'Error fetching news', error: err.message });
+    console.error("Error fetching news:", err.message);
+    res.status(500).json({ message: "Error fetching news", error: err.message });
   }
 });
 
-// Start Server
+app.post("/api/news", upload.single('image'), async (req, res) => {
+  const { text } = sanitizeObject(req.body);
+  const image_url = req.file ? `/uploads/news/${req.file.filename}` : null;
+
+  if (!text && !image_url) {
+    return res.status(400).json({ message: "Either text or image is required" });
+  }
+
+  try {
+    const [result] = await pool.query(
+      "INSERT INTO news (text, image_url) VALUES (?, ?)",
+      [text || null, image_url]
+    );
+    
+    const [newNews] = await pool.query(
+      "SELECT * FROM news WHERE id = ?",
+      [result.insertId]
+    );
+    
+    res.status(201).json({
+      message: "News added successfully",
+      news: newNews[0]
+    });
+  } catch (err) {
+    // If there was an error and we uploaded an image, delete it
+    if (image_url) {
+      try {
+        await fs.unlink(path.join(__dirname, image_url));
+      } catch (unlinkErr) {
+        console.error("Error deleting uploaded file:", unlinkErr);
+      }
+    }
+    console.error("Error adding news:", err.message);
+    res.status(500).json({ message: "Error adding news", error: err.message });
+  }
+});
+
+app.delete("/api/news/:id", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    // First get the news item to check if it has an image
+    const [news] = await pool.query("SELECT * FROM news WHERE id = ?", [id]);
+    if (news.length === 0) {
+      return res.status(404).json({ message: "News not found" });
+    }
+
+    // Delete the image file if it exists
+    if (news[0].image_url) {
+      try {
+        await fs.unlink(path.join(__dirname, news[0].image_url));
+      } catch (unlinkErr) {
+        console.error("Error deleting image file:", unlinkErr);
+      }
+    }
+
+    // Delete the news record from database
+    const [result] = await pool.query("DELETE FROM news WHERE id = ?", [id]);
+    res.json({ message: "News deleted successfully" });
+  } catch (err) {
+    console.error("Error deleting news:", err.message);
+    res.status(500).json({ message: "Error deleting news", error: err.message });
+  }
+});
+
+// Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
