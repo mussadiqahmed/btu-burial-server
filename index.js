@@ -24,30 +24,40 @@ app.use(express.static(path.join(__dirname)));
 // Handle Google credentials from environment variable
 if (process.env.GOOGLE_CREDENTIALS) {
   try {
-    const credentialsPath = path.join(__dirname, 'btu-burial-034dc4726312.json');
-    // Parse credentials to validate JSON format
+    // First validate the JSON format
     const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
     
-    // Verify required fields
+    // Check if it has the required fields
     if (!credentials.client_email || !credentials.private_key) {
-      throw new Error('Invalid credentials format - missing required fields');
+      throw new Error('Missing required fields in credentials');
+    }
+    
+    // Write to file only if validation passes
+    const credentialsPath = path.join(__dirname, 'btu-burial-034dc4726312.json');
+    
+    // Check if we can write to the directory
+    try {
+      await fs.access(path.dirname(credentialsPath), fsSync.constants.W_OK);
+    } catch (err) {
+      console.warn('⚠️ Cannot write to credentials directory, skipping file creation');
+      // Don't throw - we can still use the credentials from environment
+      return;
     }
     
     // Write credentials to file
-    fsSync.writeFileSync(credentialsPath, JSON.stringify(credentials, null, 2));
-    console.log('✅ Google credentials validated and written from environment variable');
-    console.log('📧 Using service account:', credentials.client_email);
+    await fs.writeFile(credentialsPath, JSON.stringify(credentials, null, 2));
+    console.log('✅ Google credentials validated and written to file');
+    console.log('📧 Service account:', credentials.client_email);
   } catch (err) {
     if (err.name === 'SyntaxError') {
-      console.error('❌ Failed to parse GOOGLE_CREDENTIALS environment variable - invalid JSON');
+      console.error('❌ Invalid JSON in GOOGLE_CREDENTIALS environment variable');
     } else {
-      console.error('❌ Failed to write Google credentials:', err.message);
+      console.error('❌ Error processing credentials:', err.message);
     }
-    console.error('⚠️ File upload features will be disabled');
+    // Don't exit - let the application continue and handle missing credentials gracefully
   }
 } else {
   console.warn('⚠️ GOOGLE_CREDENTIALS environment variable not found');
-  console.warn('⚠️ File upload features will be disabled');
 }
 
 // MySQL Connection Pool
@@ -67,22 +77,95 @@ async function getGoogleAuth() {
   try {
     let credentials = null;
 
-    // First try environment variable
-    if (process.env.GOOGLE_CREDENTIALS) {
+    // First try individual environment variables
+    if (process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
+      try {
+        // Clean and format the private key
+        let privateKey = process.env.GOOGLE_PRIVATE_KEY;
+        
+        // Log the private key format for debugging
+        console.log('Private Key Debug Info:', {
+          length: privateKey.length,
+          startsWithQuote: privateKey.startsWith('"'),
+          endsWithQuote: privateKey.endsWith('"'),
+          hasBeginMarker: privateKey.includes('-----BEGIN PRIVATE KEY-----'),
+          hasEndMarker: privateKey.includes('-----END PRIVATE KEY-----'),
+          containsNewlines: privateKey.includes('\n'),
+        });
+
+        // Remove any surrounding quotes if present
+        if (privateKey.startsWith('"') && privateKey.endsWith('"')) {
+          privateKey = privateKey.slice(1, -1);
+        }
+
+        // Ensure proper newline formatting
+        privateKey = privateKey
+          .replace(/\\n/g, '\n')  // Replace \n with actual newlines
+          .replace(/\s+/g, '\n')  // Replace any whitespace sequences with newlines
+          .trim();                // Remove any leading/trailing whitespace
+
+        // Ensure proper header and footer
+        if (!privateKey.startsWith('-----BEGIN PRIVATE KEY-----')) {
+          privateKey = '-----BEGIN PRIVATE KEY-----\n' + privateKey;
+        }
+        if (!privateKey.endsWith('-----END PRIVATE KEY-----')) {
+          privateKey = privateKey + '\n-----END PRIVATE KEY-----';
+        }
+
+        // Create credentials object
+        credentials = {
+          type: process.env.GOOGLE_TYPE || "service_account",
+          project_id: process.env.GOOGLE_PROJECT_ID,
+          private_key_id: process.env.GOOGLE_PRIVATE_KEY_ID,
+          private_key: privateKey,
+          client_email: process.env.GOOGLE_CLIENT_EMAIL,
+          client_id: process.env.GOOGLE_CLIENT_ID,
+          auth_uri: process.env.GOOGLE_AUTH_URI || "https://accounts.google.com/o/oauth2/auth",
+          token_uri: process.env.GOOGLE_TOKEN_URI || "https://oauth2.googleapis.com/token",
+          auth_provider_x509_cert_url: process.env.GOOGLE_AUTH_PROVIDER_X509_CERT_URL || "https://www.googleapis.com/oauth2/v1/certs",
+          client_x509_cert_url: process.env.GOOGLE_CLIENT_X509_CERT_URL,
+          universe_domain: process.env.GOOGLE_UNIVERSE_DOMAIN || "googleapis.com"
+        };
+
+        // Log credential validation
+        console.log('Credential Validation:', {
+          hasType: !!credentials.type,
+          hasProjectId: !!credentials.project_id,
+          hasPrivateKeyId: !!credentials.private_key_id,
+          hasPrivateKey: !!credentials.private_key,
+          privateKeyLength: credentials.private_key.length,
+          hasClientEmail: !!credentials.client_email,
+          hasClientId: !!credentials.client_id,
+          hasAuthUri: !!credentials.auth_uri,
+          hasTokenUri: !!credentials.token_uri,
+          hasAuthProvider: !!credentials.auth_provider_x509_cert_url,
+          hasClientCert: !!credentials.client_x509_cert_url,
+          hasUniverseDomain: !!credentials.universe_domain
+        });
+
+        console.log('✅ Credentials assembled from individual environment variables');
+      } catch (err) {
+        console.error('❌ Failed to assemble credentials from environment variables:', err.message);
+        console.error('Stack trace:', err.stack);
+      }
+    }
+
+    // If no individual variables, try GOOGLE_CREDENTIALS
+    if (!credentials && process.env.GOOGLE_CREDENTIALS) {
       try {
         credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-        console.log('✅ Successfully parsed credentials from environment variable');
+        console.log('✅ Successfully parsed credentials from GOOGLE_CREDENTIALS');
       } catch (err) {
         console.error('❌ Failed to parse GOOGLE_CREDENTIALS:', err.message);
       }
     }
 
-    // If no credentials from environment, try file system
+    // If still no credentials, try file system
     if (!credentials) {
       const possiblePaths = [
-        '/etc/secrets/btu-burial-034dc4726312.json',  // Production path
-        path.join(__dirname, 'btu-burial-034dc4726312.json'), // Local path in server directory
-        path.join(process.cwd(), 'btu-burial-034dc4726312.json'), // Local path in root directory
+        '/etc/secrets/btu-burial-034dc4726312.json',
+        path.join(__dirname, 'btu-burial-034dc4726312.json'),
+        path.join(process.cwd(), 'btu-burial-034dc4726312.json'),
       ];
 
       for (const credPath of possiblePaths) {
@@ -108,6 +191,11 @@ async function getGoogleAuth() {
       return null;
     }
 
+    // Ensure private key is properly formatted
+    if (!credentials.private_key.includes('-----BEGIN PRIVATE KEY-----')) {
+      credentials.private_key = `-----BEGIN PRIVATE KEY-----\n${credentials.private_key}\n-----END PRIVATE KEY-----`;
+    }
+
     console.log('🔐 Initializing Google Auth with client email:', credentials.client_email);
     
     // Create auth client
@@ -116,7 +204,7 @@ async function getGoogleAuth() {
       scopes: ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive.metadata.readonly']
     });
 
-    // Test the credentials by making a simple API call
+    // Test the credentials
     try {
       const drive = google.drive({ version: 'v3', auth });
       await drive.files.list({ pageSize: 1 });
@@ -124,6 +212,12 @@ async function getGoogleAuth() {
       return auth;
     } catch (err) {
       console.error('❌ Failed to test Google Drive API access:', err.message);
+      console.error('⚠️ Credentials being used:', {
+        client_email: credentials.client_email,
+        private_key_length: credentials.private_key.length,
+        has_begin_marker: credentials.private_key.includes('-----BEGIN PRIVATE KEY-----'),
+        has_end_marker: credentials.private_key.includes('-----END PRIVATE KEY-----')
+      });
       return null;
     }
   } catch (err) {
@@ -1044,6 +1138,45 @@ app.get('/proxy-image/:fileId', async (req, res) => {
   } catch (err) {
     console.error('Error proxying image:', err);
     res.status(500).send('Error fetching image');
+  }
+});
+
+// Add test endpoint for Google credentials
+app.get('/test-credentials', async (req, res) => {
+  try {
+    const auth = await getGoogleAuth();
+    if (!auth) {
+      throw new Error('Failed to initialize Google Auth');
+    }
+
+    // Test the credentials by listing files
+    const drive = google.drive({ version: 'v3', auth });
+    const response = await drive.files.list({
+      pageSize: 1,
+      fields: 'files(id, name)',
+    });
+
+    res.json({
+      success: true,
+      message: 'Google credentials are valid',
+      auth: {
+        credentials: {
+          type: auth.credentials.type,
+          project_id: auth.credentials.project_id,
+          client_email: auth.credentials.client_email,
+          private_key_length: auth.credentials.private_key?.length,
+          has_private_key: !!auth.credentials.private_key,
+        }
+      },
+      test_response: response.data
+    });
+  } catch (err) {
+    console.error('Credentials test failed:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 });
 
