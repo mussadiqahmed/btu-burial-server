@@ -21,7 +21,7 @@ app.use(express.static(path.join(__dirname)));
 
 // Image storage configuration
 const IMAGE_DOMAIN = 'https://btuburial.co.bw';
-const UPLOAD_DIR = 'uploads/news';
+const UPLOAD_DIR = 'public_html/uploads/news';
 
 // cPanel storage functions
 async function uploadToCPanel(buffer, filename) {
@@ -29,21 +29,21 @@ async function uploadToCPanel(buffer, filename) {
     console.log('🚀 Starting cPanel upload:', filename);
     
     // Ensure upload directory exists
-    const uploadPath = path.join(process.cwd(), 'public_html', UPLOAD_DIR);
+    const uploadPath = path.join(process.cwd(), UPLOAD_DIR);
     await fs.mkdir(uploadPath, { recursive: true });
     
     // Save file to server
     const filePath = path.join(uploadPath, filename);
     await fs.writeFile(filePath, buffer);
     
-    // Generate public URL
-    const publicUrl = `${IMAGE_DOMAIN}/${UPLOAD_DIR}/${filename}`;
+    // Generate public URL (remove public_html from URL)
+    const publicUrl = `${IMAGE_DOMAIN}/uploads/news/${filename}`;
     console.log('✅ File uploaded successfully');
     console.log('🔗 Public URL:', publicUrl);
     
     return {
       url: publicUrl,
-      path: `${UPLOAD_DIR}/${filename}`
+      path: `uploads/news/${filename}` // Store relative path in database
     };
   } catch (error) {
     console.error('❌ Upload failed:', error);
@@ -54,6 +54,7 @@ async function uploadToCPanel(buffer, filename) {
 async function deleteFromCPanel(filepath) {
   try {
     console.log('🗑️ Deleting file:', filepath);
+    // Add public_html to the path for file operations
     const fullPath = path.join(process.cwd(), 'public_html', filepath);
     await fs.unlink(fullPath);
     console.log('✅ File deleted successfully');
@@ -242,6 +243,29 @@ app.delete("/api/news/:id", async (req, res) => {
   } catch (err) {
     console.error("Error deleting news:", err.message);
     res.status(500).json({ message: "Error deleting news", error: err.message });
+  }
+});
+
+// Admin Dashboard Endpoint
+app.get("/api/admin/dashboard", async (req, res) => {
+  try {
+    // Get total news count
+    const [newsCount] = await pool.query("SELECT COUNT(*) as total FROM news");
+    
+    // Get latest news
+    const [latestNews] = await pool.query(
+      "SELECT * FROM news ORDER BY created_at DESC LIMIT 5"
+    );
+
+    res.json({
+      stats: {
+        totalNews: newsCount[0].total
+      },
+      latestNews
+    });
+  } catch (err) {
+    console.error('❌ Error fetching dashboard data:', err);
+    res.status(500).json({ message: "Error fetching dashboard data", error: err.message });
   }
 });
 
