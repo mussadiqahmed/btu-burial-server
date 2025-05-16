@@ -10,8 +10,15 @@ const { google } = require('googleapis');
 require("dotenv").config();
 
 const app = express();
+
+// Trust proxy - required for rate limiting behind reverse proxy
+app.set('trust proxy', 1);
+
 app.use(cors());
 app.use(express.json());
+
+// Serve static files
+app.use(express.static(path.join(__dirname)));
 
 // MySQL Connection Pool
 const pool = mysql.createPool({
@@ -993,7 +1000,7 @@ app.delete("/api/news/:id", async (req, res) => {
   }
 });
 
-// Proxy endpoint for Google Drive images (to handle CORS)
+// Proxy endpoint for Google Drive images
 app.get('/proxy-image/:fileId', async (req, res) => {
   const { fileId } = req.params;
   
@@ -1002,12 +1009,24 @@ app.get('/proxy-image/:fileId', async (req, res) => {
     return res.status(400).send('File ID is required');
   }
 
+  // Clean up the fileId - remove any URL parts if present
+  const cleanFileId = fileId.split('/').pop().split('?')[0];
+  
+  console.log('🔍 Proxying image request for file ID:', cleanFileId);
+
   try {
     const drive = await drivePromise;
+    if (!drive) {
+      console.error('Google Drive client not available');
+      return res.status(503).json({
+        message: 'Image service temporarily unavailable',
+        error: 'Google Drive integration is not available'
+      });
+    }
     
     // First get the file metadata to verify it exists and is an image
     const file = await drive.files.get({
-      fileId: fileId,
+      fileId: cleanFileId,
       fields: 'id, mimeType, webContentLink'
     });
 
@@ -1016,9 +1035,14 @@ app.get('/proxy-image/:fileId', async (req, res) => {
       return res.status(400).send('Not an image file');
     }
 
+    console.log('✅ Found image file:', {
+      id: file.data.id,
+      mimeType: file.data.mimeType
+    });
+
     // Get the file content
     const response = await drive.files.get({
-      fileId: fileId,
+      fileId: cleanFileId,
       alt: 'media'
     }, {
       responseType: 'stream'
@@ -1031,7 +1055,10 @@ app.get('/proxy-image/:fileId', async (req, res) => {
     // Pipe the response
     response.data.pipe(res);
   } catch (err) {
-    console.error('Error proxying image:', err.message);
+    console.error('❌ Error proxying image:', err);
+    if (err.message.includes('File not found')) {
+      return res.status(404).send('Image not found');
+    }
     res.status(500).send('Error fetching image');
   }
 });
@@ -1200,6 +1227,30 @@ app.get('/api/test-google-env', (req, res) => {
     variables: envVars
   });
 });
+
+// Modify the getImageUrl function in the frontend code
+function getImageUrl(url) {
+  if (!url) {
+    return null;
+  }
+  
+  // If it's already a proxy URL, return as is
+  if (url.startsWith('/proxy-image/')) {
+    return `${API_URL}${url}`;
+  }
+  
+  // If it's a direct Google Drive file ID
+  if (url.match(/^[-\w]{25,}$/)) {
+    return `${API_URL}/proxy-image/${url}`;
+  }
+  
+  // For external URLs (like picsum), return directly
+  if (url.startsWith('http')) {
+    return url;
+  }
+  
+  return null;
+}
 
 // Start the server
 const PORT = process.env.PORT || 3000;
