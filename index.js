@@ -22,43 +22,46 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
 // Handle Google credentials from environment variable
-if (process.env.GOOGLE_CREDENTIALS) {
-  try {
-    // First validate the JSON format
-    const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-    
-    // Check if it has the required fields
-    if (!credentials.client_email || !credentials.private_key) {
-      throw new Error('Missing required fields in credentials');
-    }
-    
-    // Write to file only if validation passes
-    const credentialsPath = path.join(__dirname, 'btu-burial-034dc4726312.json');
-    
-    // Check if we can write to the directory
+(async () => {
+  if (process.env.GOOGLE_CREDENTIALS) {
     try {
-      await fs.access(path.dirname(credentialsPath), fsSync.constants.W_OK);
+      // First validate the JSON format
+      const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+      
+      // Check if it has the required fields
+      if (!credentials.client_email || !credentials.private_key) {
+        throw new Error('Missing required fields in credentials');
+      }
+      
+      // Write to file only if validation passes
+      const credentialsPath = path.join(__dirname, 'btu-burial-034dc4726312.json');
+      
+      // Check if we can write to the directory
+      try {
+        await fs.access(path.dirname(credentialsPath), fsSync.constants.W_OK);
+        
+        // Write credentials to file
+        await fs.writeFile(credentialsPath, JSON.stringify(credentials, null, 2));
+        console.log('✅ Google credentials validated and written to file');
+        console.log('📧 Service account:', credentials.client_email);
+      } catch (err) {
+        console.warn('⚠️ Cannot write to credentials directory, skipping file creation');
+        // Don't throw - we can still use the credentials from environment
+      }
     } catch (err) {
-      console.warn('⚠️ Cannot write to credentials directory, skipping file creation');
-      // Don't throw - we can still use the credentials from environment
-      return;
+      if (err.name === 'SyntaxError') {
+        console.error('❌ Invalid JSON in GOOGLE_CREDENTIALS environment variable');
+      } else {
+        console.error('❌ Error processing credentials:', err.message);
+      }
+      // Don't exit - let the application continue and handle missing credentials gracefully
     }
-    
-    // Write credentials to file
-    await fs.writeFile(credentialsPath, JSON.stringify(credentials, null, 2));
-    console.log('✅ Google credentials validated and written to file');
-    console.log('📧 Service account:', credentials.client_email);
-  } catch (err) {
-    if (err.name === 'SyntaxError') {
-      console.error('❌ Invalid JSON in GOOGLE_CREDENTIALS environment variable');
-    } else {
-      console.error('❌ Error processing credentials:', err.message);
-    }
-    // Don't exit - let the application continue and handle missing credentials gracefully
+  } else {
+    console.warn('⚠️ GOOGLE_CREDENTIALS environment variable not found');
   }
-} else {
-  console.warn('⚠️ GOOGLE_CREDENTIALS environment variable not found');
-}
+})().catch(err => {
+  console.error('❌ Error in credentials initialization:', err);
+});
 
 // MySQL Connection Pool
 const pool = mysql.createPool({
