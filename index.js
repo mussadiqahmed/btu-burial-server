@@ -6,10 +6,15 @@ const bcrypt = require("bcrypt");
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
+const fsSync = require('fs');  // Add synchronous fs module
 const { google } = require('googleapis');
 require("dotenv").config();
 
 const app = express();
+
+// Trust proxy - required for rate limiting behind reverse proxy
+app.set('trust proxy', 1);
+
 app.use(cors());
 app.use(express.json());
 
@@ -20,11 +25,29 @@ app.use(express.static(path.join(__dirname)));
 if (process.env.GOOGLE_CREDENTIALS) {
   try {
     const credentialsPath = path.join(__dirname, 'btu-burial-034dc4726312.json');
-    fs.writeFileSync(credentialsPath, process.env.GOOGLE_CREDENTIALS);
-    console.log('✅ Google credentials written from environment variable');
+    // Parse credentials to validate JSON format
+    const credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+    
+    // Verify required fields
+    if (!credentials.client_email || !credentials.private_key) {
+      throw new Error('Invalid credentials format - missing required fields');
+    }
+    
+    // Write credentials to file
+    fsSync.writeFileSync(credentialsPath, JSON.stringify(credentials, null, 2));
+    console.log('✅ Google credentials validated and written from environment variable');
+    console.log('📧 Using service account:', credentials.client_email);
   } catch (err) {
-    console.error('❌ Failed to write Google credentials:', err);
+    if (err.name === 'SyntaxError') {
+      console.error('❌ Failed to parse GOOGLE_CREDENTIALS environment variable - invalid JSON');
+    } else {
+      console.error('❌ Failed to write Google credentials:', err.message);
+    }
+    console.error('⚠️ File upload features will be disabled');
   }
+} else {
+  console.warn('⚠️ GOOGLE_CREDENTIALS environment variable not found');
+  console.warn('⚠️ File upload features will be disabled');
 }
 
 // MySQL Connection Pool
@@ -42,25 +65,35 @@ const pool = mysql.createPool({
 // Google Drive API Setup
 async function getGoogleAuth() {
   try {
-    // Use the correct service account file name
-    const possiblePaths = [
-      '/etc/secrets/btu-burial-034dc4726312.json',  // Production path
-      path.join(__dirname, 'btu-burial-034dc4726312.json'), // Local path in server directory
-      path.join(process.cwd(), 'btu-burial-034dc4726312.json'), // Local path in root directory
-    ];
-
     let credentials = null;
-    let usedPath = null;
 
-    for (const credPath of possiblePaths) {
+    // First try environment variable
+    if (process.env.GOOGLE_CREDENTIALS) {
       try {
-        console.log('🔑 Trying to read credentials from:', credPath);
-        credentials = JSON.parse(await fs.readFile(credPath, 'utf8'));
-        usedPath = credPath;
-        console.log('✅ Successfully read credentials from:', credPath);
-        break;
+        credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+        console.log('✅ Successfully parsed credentials from environment variable');
       } catch (err) {
-        console.log('⚠️ Could not read credentials from:', credPath);
+        console.error('❌ Failed to parse GOOGLE_CREDENTIALS:', err.message);
+      }
+    }
+
+    // If no credentials from environment, try file system
+    if (!credentials) {
+      const possiblePaths = [
+        '/etc/secrets/btu-burial-034dc4726312.json',  // Production path
+        path.join(__dirname, 'btu-burial-034dc4726312.json'), // Local path in server directory
+        path.join(process.cwd(), 'btu-burial-034dc4726312.json'), // Local path in root directory
+      ];
+
+      for (const credPath of possiblePaths) {
+        try {
+          console.log('🔑 Trying to read credentials from:', credPath);
+          credentials = JSON.parse(await fs.readFile(credPath, 'utf8'));
+          console.log('✅ Successfully read credentials from:', credPath);
+          break;
+        } catch (err) {
+          console.log('⚠️ Could not read credentials from:', credPath);
+        }
       }
     }
 
@@ -76,12 +109,23 @@ async function getGoogleAuth() {
     }
 
     console.log('🔐 Initializing Google Auth with client email:', credentials.client_email);
+    
+    // Create auth client
     const auth = new google.auth.GoogleAuth({
       credentials,
       scopes: ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive.metadata.readonly']
     });
-    
-    return auth;
+
+    // Test the credentials by making a simple API call
+    try {
+      const drive = google.drive({ version: 'v3', auth });
+      await drive.files.list({ pageSize: 1 });
+      console.log('✅ Successfully tested Google Drive API access');
+      return auth;
+    } catch (err) {
+      console.error('❌ Failed to test Google Drive API access:', err.message);
+      return null;
+    }
   } catch (err) {
     console.error('❌ Error in getGoogleAuth:', err.message);
     console.warn('⚠️ File upload features will be disabled.');
@@ -165,6 +209,7 @@ const drivePromise = (async () => {
     } catch (err) {
       console.warn('⚠️ Failed to ensure upload folder exists:', err.message);
       console.warn('⚠️ File upload features may be limited');
+      return null;
     }
     
     return drive;
@@ -930,22 +975,27 @@ app.delete("/api/news/:id", async (req, res) => {
     }
 
     if (news[0].image_url) {
-      try {
-        const fileId = news[0].image_url.match(/[-\w]{25,}/);
-        if (fileId) {
-          const drive = await drivePromise;
-          await drive.files.delete({ fileId: fileId[0] });
-          console.log(`Deleted Google Drive file: ${fileId[0]}`);
+      const drive = await drivePromise;
+      if (drive) {  // Only attempt to delete from Google Drive if we have a drive client
+        try {
+          const fileId = news[0].image_url.match(/[-\w]{25,}/);
+          if (fileId) {
+            await drive.files.delete({ fileId: fileId[0] });
+            console.log(`✅ Deleted Google Drive file: ${fileId[0]}`);
+          }
+        } catch (deleteErr) {
+          console.error("⚠️ Error deleting Google Drive file (may not exist):", deleteErr.message);
+          // Continue with database deletion even if Drive deletion fails
         }
-      } catch (deleteErr) {
-        console.error("Error deleting Google Drive file (may not exist):", deleteErr);
+      } else {
+        console.log("⚠️ Skipping Google Drive file deletion - Drive integration not available");
       }
     }
 
     const [result] = await pool.query("DELETE FROM news WHERE id = ?", [id]);
     res.json({ message: "News deleted successfully" });
   } catch (err) {
-    console.error("Error deleting news:", err.message);
+    console.error("❌ Error deleting news:", err.message);
     res.status(500).json({ message: "Error deleting news", error: err.message });
   }
 });
