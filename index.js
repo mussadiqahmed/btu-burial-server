@@ -136,13 +136,14 @@ async function ensureUploadFolder() {
     // Check if folder already exists
     const response = await drive.files.list({
       q: `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`,
-      fields: 'files(id, name)',
+      fields: 'files(id, name, webViewLink)',
       spaces: 'drive'
     });
 
     if (response.data.files.length > 0) {
       const folderId = response.data.files[0].id;
       console.log('✅ Found existing folder:', folderId);
+      console.log('🔗 Folder web view link:', response.data.files[0].webViewLink);
       return folderId;
     }
 
@@ -155,10 +156,12 @@ async function ensureUploadFolder() {
 
     const folder = await drive.files.create({
       requestBody: fileMetadata,
-      fields: 'id'
+      fields: 'id,webViewLink'
     });
 
     const folderId = folder.data.id;
+    console.log('✅ Created new folder:', folderId);
+    console.log('🔗 Folder web view link:', folder.data.webViewLink);
     
     // Make folder publicly accessible
     await drive.permissions.create({
@@ -168,8 +171,8 @@ async function ensureUploadFolder() {
         type: 'anyone'
       }
     });
+    console.log('✅ Folder permissions set to public');
 
-    console.log('✅ Created new folder:', folderId);
     return folderId;
   } catch (err) {
     console.error('❌ Error ensuring upload folder:', err);
@@ -260,6 +263,7 @@ async function uploadToGoogleDrive(buffer, filename) {
   const drive = await drivePromise;
   
   if (!drive) {
+    console.error('❌ Google Drive client not available');
     throw new Error('Google Drive integration is not available');
   }
 
@@ -268,11 +272,12 @@ async function uploadToGoogleDrive(buffer, filename) {
     try {
       UPLOAD_FOLDER_ID = await ensureUploadFolder();
     } catch (err) {
+      console.error('❌ Failed to create/find upload folder:', err);
       throw new Error('Failed to create upload folder: ' + err.message);
     }
   }
 
-  console.log('🚀 Starting Google Drive upload for:', filename);
+  console.log('🚀 Starting Google Drive upload for:', filename, 'to folder:', UPLOAD_FOLDER_ID);
   try {
     const fileMetadata = {
       name: filename,
@@ -281,9 +286,23 @@ async function uploadToGoogleDrive(buffer, filename) {
     };
 
     console.log('📁 Creating file in Google Drive with metadata:', {
-      ...fileMetadata,
+      name: fileMetadata.name,
+      mimeType: fileMetadata.mimeType,
       parentFolder: UPLOAD_FOLDER_ID
     });
+    
+    // Test folder access before upload
+    try {
+      await drive.files.list({
+        q: `'${UPLOAD_FOLDER_ID}' in parents`,
+        pageSize: 1,
+        fields: 'files(id, name)'
+      });
+      console.log('✅ Successfully verified folder access');
+    } catch (err) {
+      console.error('❌ Failed to access folder:', err);
+      throw new Error('No access to upload folder: ' + err.message);
+    }
     
     const response = await drive.files.create({
       requestBody: fileMetadata,
@@ -291,22 +310,29 @@ async function uploadToGoogleDrive(buffer, filename) {
         mimeType: fileMetadata.mimeType,
         body: buffer
       },
-      fields: 'id'
+      fields: 'id,webViewLink',
+      timeout: 60000 // 60 second timeout
     });
 
     const fileId = response.data.id;
     console.log('✅ File created in Google Drive with ID:', fileId);
+    console.log('🔗 Web view link:', response.data.webViewLink);
 
-    await drive.permissions.create({
-      fileId: fileId,
-      requestBody: {
-        role: 'reader',
-        type: 'anyone'
-      }
-    });
-    console.log('✅ File permissions set to public');
+    try {
+      await drive.permissions.create({
+        fileId: fileId,
+        requestBody: {
+          role: 'reader',
+          type: 'anyone'
+        }
+      });
+      console.log('✅ File permissions set to public');
+    } catch (err) {
+      console.error('❌ Failed to set file permissions:', err);
+      // Don't throw here, the file was still uploaded
+    }
 
-    return fileId; // Return just the file ID
+    return fileId;
   } catch (err) {
     console.error('❌ Error in uploadToGoogleDrive:', err);
     if (err.response) {
@@ -925,14 +951,39 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
     return res.status(400).json({ message: "Either text or image is required" });
   }
 
+  // Set a longer timeout for this request
+  req.setTimeout(120000); // 2 minutes
+  res.setTimeout(120000); // 2 minutes
+
   if (req.file) {
     try {
-      const fileId = await uploadToGoogleDrive(
-        req.file.buffer, 
-        `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`
-      );
-      image_url = fileId; // Store just the file ID
-      console.log('✅ File ID saved:', fileId);
+      // Retry upload up to 3 times
+      let retries = 3;
+      let lastError = null;
+      
+      while (retries > 0) {
+        try {
+          console.log(`📤 Attempting upload (${4-retries}/3)...`);
+          const fileId = await uploadToGoogleDrive(
+            req.file.buffer, 
+            `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`
+          );
+          image_url = fileId;
+          console.log('✅ File ID saved:', fileId);
+          break;
+        } catch (err) {
+          lastError = err;
+          retries--;
+          if (retries > 0) {
+            console.log(`⚠️ Upload failed, retrying... (${retries} attempts left)`);
+            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
+          }
+        }
+      }
+      
+      if (!image_url) {
+        throw lastError || new Error('Failed to upload after 3 attempts');
+      }
     } catch (err) {
       console.error('❌ Failed to upload image:', err);
       return res.status(500).json({ 
@@ -971,7 +1022,7 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
     console.error('❌ Database error:', err);
     res.status(500).json({ 
       message: "Error adding news", 
-      error: err.message
+      error: err.message 
     });
   }
 });
@@ -1280,6 +1331,176 @@ function getImageUrl(url) {
   
   return null;
 }
+
+// Add test endpoint for Google Drive folder access
+app.get('/api/test-drive-folder', async (req, res) => {
+  try {
+    const drive = await drivePromise;
+    if (!drive) {
+      throw new Error('Google Drive client not initialized');
+    }
+
+    // Test service account authentication
+    console.log('🔑 Testing service account authentication...');
+    const about = await drive.about.get({
+      fields: 'user'
+    });
+    console.log('✅ Authenticated as:', about.data.user.emailAddress);
+
+    // Ensure upload folder exists
+    console.log('📁 Testing folder access...');
+    const folderId = await ensureUploadFolder();
+    
+    // Test folder access
+    const folderContents = await drive.files.list({
+      q: `'${folderId}' in parents`,
+      fields: 'files(id, name, webViewLink, permissions)',
+      pageSize: 10
+    });
+
+    res.json({
+      success: true,
+      serviceAccount: about.data.user.emailAddress,
+      folder: {
+        id: folderId,
+        files: folderContents.data.files
+      }
+    });
+  } catch (err) {
+    console.error('❌ Drive folder test failed:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+});
+
+// Add diagnostic endpoint for Google Drive setup
+app.get('/api/diagnose-drive', async (req, res) => {
+  try {
+    console.log('🔍 Starting Google Drive diagnosis...');
+    
+    // 1. Check service account credentials
+    const auth = await getGoogleAuth();
+    if (!auth) {
+      throw new Error('Failed to initialize Google Auth');
+    }
+    
+    const drive = google.drive({ version: 'v3', auth });
+    
+    // 2. Get service account details
+    const about = await drive.about.get({
+      fields: 'user,storageQuota'
+    });
+    
+    // 3. Check target folder
+    const targetFolderId = '1chc6EzOETzUlSD5mxv5A7nRS--XGuWBO';
+    let folderInfo;
+    try {
+      folderInfo = await drive.files.get({
+        fileId: targetFolderId,
+        fields: 'id,name,mimeType,capabilities,permissions'
+      });
+      console.log('📁 Found target folder:', folderInfo.data);
+    } catch (err) {
+      console.error('❌ Failed to access target folder:', err.message);
+      folderInfo = { error: err.message };
+    }
+    
+    // 4. Try to create a test file in the folder
+    let testFileResult;
+    try {
+      const testFile = await drive.files.create({
+        requestBody: {
+          name: 'test-file.txt',
+          parents: [targetFolderId],
+          mimeType: 'text/plain'
+        },
+        media: {
+          mimeType: 'text/plain',
+          body: 'Test file content'
+        },
+        fields: 'id,name,webViewLink'
+      });
+      console.log('✅ Successfully created test file:', testFile.data);
+      
+      // Clean up test file
+      await drive.files.delete({
+        fileId: testFile.data.id
+      });
+      console.log('🗑️ Cleaned up test file');
+      
+      testFileResult = {
+        success: true,
+        fileInfo: testFile.data
+      };
+    } catch (err) {
+      console.error('❌ Failed to create test file:', err.message);
+      testFileResult = {
+        success: false,
+        error: err.message
+      };
+    }
+    
+    // Return diagnostic information
+    res.json({
+      serviceAccount: {
+        email: about.data.user.emailAddress,
+        quota: about.data.storageQuota
+      },
+      targetFolder: {
+        id: targetFolderId,
+        info: folderInfo.data || folderInfo.error
+      },
+      testFile: testFileResult,
+      environment: {
+        GOOGLE_DRIVE_FOLDER_ID: process.env.GOOGLE_DRIVE_FOLDER_ID || 'not set',
+        hasCredentials: !!process.env.GOOGLE_CREDENTIALS || (!!process.env.GOOGLE_CLIENT_EMAIL && !!process.env.GOOGLE_PRIVATE_KEY)
+      }
+    });
+  } catch (err) {
+    console.error('❌ Diagnosis failed:', err);
+    res.status(500).json({
+      error: err.message,
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+});
+
+// Add a test file upload endpoint
+app.post('/api/test-upload', upload.single('file'), async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ message: 'No file provided' });
+  }
+
+  try {
+    console.log('📤 Testing file upload...');
+    console.log('File details:', {
+      name: req.file.originalname,
+      size: req.file.size,
+      type: req.file.mimetype
+    });
+
+    const fileId = await uploadToGoogleDrive(
+      req.file.buffer,
+      `test-${Date.now()}-${req.file.originalname}`
+    );
+
+    res.json({
+      success: true,
+      fileId: fileId,
+      viewUrl: `https://drive.google.com/file/d/${fileId}/view`
+    });
+  } catch (err) {
+    console.error('❌ Test upload failed:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message,
+      details: err.response?.data || err.stack
+    });
+  }
+});
 
 // Start the server
 const PORT = process.env.PORT || 3000;
