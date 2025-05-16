@@ -101,34 +101,41 @@ async function getGoogleAuth() {
           privateKey = privateKey.slice(1, -1);
         }
 
-        // Normalize line endings and clean up the key
-        privateKey = privateKey
+        // Extract the base64 part of the key
+        const keyMatch = privateKey.match(/-----BEGIN PRIVATE KEY-----\n?(.*?)\n?-----END PRIVATE KEY-----/s);
+        if (!keyMatch) {
+          throw new Error('Invalid private key format');
+        }
+
+        // Clean the base64 content
+        let base64Content = keyMatch[1]
           .replace(/\\n/g, '\n')  // Replace \n with actual newlines
-          .replace(/[\r\n]+/g, '\n')  // Normalize line endings
-          .replace(/\s+/g, '\n')  // Replace any whitespace sequences with newlines
+          .replace(/[\r\n\s]+/g, '')  // Remove all whitespace and line breaks
           .trim();
 
-        // Ensure the key has the correct format
-        const keyParts = privateKey.split('\n');
-        const cleanedParts = keyParts.filter(part => part.trim() !== '');
-        
+        // Validate base64 content
+        if (!/^[A-Za-z0-9+/=]+$/.test(base64Content)) {
+          console.error('Invalid characters found in key content');
+          // Clean up any invalid characters
+          base64Content = base64Content.replace(/[^A-Za-z0-9+/=]/g, '');
+        }
+
+        // Split the base64 content into 64-character lines
+        const chunks = base64Content.match(/.{1,64}/g) || [];
+
         // Reconstruct the key with proper formatting
         privateKey = [
           '-----BEGIN PRIVATE KEY-----',
-          ...cleanedParts.filter(part => 
-            !part.includes('BEGIN') && 
-            !part.includes('END')
-          ),
+          ...chunks,
           '-----END PRIVATE KEY-----'
-        ].join('\n');
-
-        // Add final newline
-        privateKey += '\n';
+        ].join('\n') + '\n';
 
         console.log('Private Key Structure:', {
           totalLines: privateKey.split('\n').length,
           startsCorrectly: privateKey.startsWith('-----BEGIN PRIVATE KEY-----'),
           endsCorrectly: privateKey.endsWith('-----END PRIVATE KEY-----\n'),
+          base64Length: base64Content.length,
+          chunkCount: chunks.length,
           containsOnlyValidChars: /^[A-Za-z0-9+/=\n-]+$/.test(privateKey)
         });
 
@@ -146,6 +153,12 @@ async function getGoogleAuth() {
           client_x509_cert_url: process.env.GOOGLE_CLIENT_X509_CERT_URL,
           universe_domain: process.env.GOOGLE_UNIVERSE_DOMAIN || "googleapis.com"
         };
+
+        // Validate the final private key format
+        if (!credentials.private_key.includes('-----BEGIN PRIVATE KEY-----') ||
+            !credentials.private_key.includes('-----END PRIVATE KEY-----')) {
+          throw new Error('Private key is missing required markers');
+        }
 
         // Log credential validation
         console.log('Credential Validation:', {
