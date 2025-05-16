@@ -1009,6 +1009,11 @@ app.get('/proxy-image/:fileId', async (req, res) => {
     return res.status(400).send('File ID is required');
   }
 
+  // If it's a complete URL, redirect to it
+  if (fileId.startsWith('http')) {
+    return res.redirect(fileId);
+  }
+
   // Clean up the fileId - remove any URL parts if present
   const cleanFileId = fileId.split('/').pop().split('?')[0];
   
@@ -1027,7 +1032,8 @@ app.get('/proxy-image/:fileId', async (req, res) => {
     // First get the file metadata to verify it exists and is an image
     const file = await drive.files.get({
       fileId: cleanFileId,
-      fields: 'id, mimeType, webContentLink'
+      fields: 'id, mimeType, webContentLink',
+      timeout: 10000 // 10 second timeout for metadata
     });
 
     if (!file.data.mimeType?.startsWith('image/')) {
@@ -1040,10 +1046,11 @@ app.get('/proxy-image/:fileId', async (req, res) => {
       mimeType: file.data.mimeType
     });
 
-    // Get the file content
+    // Get the file content with a longer timeout
     const response = await drive.files.get({
       fileId: cleanFileId,
-      alt: 'media'
+      alt: 'media',
+      timeout: 30000 // 30 second timeout for content
     }, {
       responseType: 'stream'
     });
@@ -1052,12 +1059,28 @@ app.get('/proxy-image/:fileId', async (req, res) => {
     res.setHeader('Content-Type', file.data.mimeType);
     res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
 
-    // Pipe the response
-    response.data.pipe(res);
+    // Handle stream errors
+    response.data.on('error', (err) => {
+      console.error('❌ Stream error:', err);
+      if (!res.headersSent) {
+        res.status(500).send('Error streaming image');
+      }
+    });
+
+    // Pipe the response with error handling
+    response.data.pipe(res).on('error', (err) => {
+      console.error('❌ Pipe error:', err);
+      if (!res.headersSent) {
+        res.status(500).send('Error streaming image');
+      }
+    });
   } catch (err) {
     console.error('❌ Error proxying image:', err);
     if (err.message.includes('File not found')) {
       return res.status(404).send('Image not found');
+    }
+    if (err.code === 'ETIMEDOUT' || err.code === 'ESOCKETTIMEDOUT') {
+      return res.status(504).send('Request timed out');
     }
     res.status(500).send('Error fetching image');
   }
