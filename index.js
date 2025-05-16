@@ -8,6 +8,8 @@ const path = require('path');
 const fs = require('fs').promises;
 const fsSync = require('fs');  // Add synchronous fs module
 const { google } = require('googleapis');
+const ftp = require('basic-ftp');
+const os = require('os');
 require("dotenv").config();
 
 const app = express();
@@ -469,42 +471,78 @@ async function uploadToGoogleDrive(buffer, filename) {
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
 const UPLOAD_DIR = process.env.UPLOAD_DIR || '/public_html/uploads/news';
+const FTP_CONFIG = {
+  host: process.env.FTP_HOST,
+  user: process.env.FTP_USER,
+  password: process.env.FTP_PASSWORD,
+  secure: true
+};
 
-// Function to upload file to cPanel
+// Function to upload file to cPanel via FTP
 async function uploadToCPanel(file, filename) {
+  const client = new ftp.Client();
+  client.ftp.verbose = true;
+  
   try {
-    // Create full path for the file
-    const uploadPath = path.join(__dirname, '..', UPLOAD_DIR, filename);
+    console.log('🔄 Connecting to FTP server...');
+    await client.access(FTP_CONFIG);
     
-    // Ensure directory exists
-    await fs.mkdir(path.dirname(uploadPath), { recursive: true });
+    // Create a temporary file
+    const tempPath = path.join(os.tmpdir(), filename);
+    await fs.writeFile(tempPath, file.buffer);
     
-    // Write file to disk
-    await fs.writeFile(uploadPath, file.buffer);
+    // Ensure the remote directory exists
+    console.log('📁 Ensuring remote directory exists...');
+    const dirs = UPLOAD_DIR.split('/').filter(Boolean);
+    let currentPath = '';
+    
+    for (const dir of dirs) {
+      currentPath += '/' + dir;
+      try {
+        await client.ensureDir(currentPath);
+      } catch (err) {
+        console.log(`Creating directory: ${currentPath}`);
+      }
+    }
+    
+    // Upload the file
+    console.log(`📤 Uploading file to ${UPLOAD_DIR}/${filename}`);
+    await client.uploadFrom(tempPath, `${UPLOAD_DIR}/${filename}`);
+    
+    // Clean up temp file
+    await fs.unlink(tempPath);
     
     // Return the public URL
-    return `${IMAGE_DOMAIN}/uploads/news/${filename}`;
+    const url = `${IMAGE_DOMAIN}/uploads/news/${filename}`;
+    console.log('✅ File uploaded successfully:', url);
+    return url;
   } catch (err) {
     console.error('❌ Error uploading to cPanel:', err);
     throw new Error(`Failed to upload to cPanel: ${err.message}`);
+  } finally {
+    client.close();
   }
 }
 
-// Function to delete file from cPanel
+// Function to delete file from cPanel via FTP
 async function deleteFromCPanel(imageUrl) {
+  if (!imageUrl) return;
+  
+  const client = new ftp.Client();
   try {
-    if (!imageUrl) return;
+    await client.access(FTP_CONFIG);
     
     // Extract filename from URL
     const filename = imageUrl.split('/').pop();
-    const filePath = path.join(__dirname, '..', UPLOAD_DIR, filename);
+    const remotePath = `${UPLOAD_DIR}/${filename}`;
     
-    // Delete file if exists
-    await fs.unlink(filePath);
-    console.log('✅ Deleted file from cPanel:', filename);
+    console.log('🗑️ Deleting file:', remotePath);
+    await client.remove(remotePath);
+    console.log('✅ File deleted successfully');
   } catch (err) {
     console.error('❌ Error deleting from cPanel:', err);
-    // Don't throw error as file might not exist
+  } finally {
+    client.close();
   }
 }
 
