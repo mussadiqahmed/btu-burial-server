@@ -101,19 +101,36 @@ async function getGoogleAuth() {
           privateKey = privateKey.slice(1, -1);
         }
 
-        // Ensure proper newline formatting
+        // Normalize line endings and clean up the key
         privateKey = privateKey
           .replace(/\\n/g, '\n')  // Replace \n with actual newlines
+          .replace(/[\r\n]+/g, '\n')  // Normalize line endings
           .replace(/\s+/g, '\n')  // Replace any whitespace sequences with newlines
-          .trim();                // Remove any leading/trailing whitespace
+          .trim();
 
-        // Ensure proper header and footer
-        if (!privateKey.startsWith('-----BEGIN PRIVATE KEY-----')) {
-          privateKey = '-----BEGIN PRIVATE KEY-----\n' + privateKey;
-        }
-        if (!privateKey.endsWith('-----END PRIVATE KEY-----')) {
-          privateKey = privateKey + '\n-----END PRIVATE KEY-----';
-        }
+        // Ensure the key has the correct format
+        const keyParts = privateKey.split('\n');
+        const cleanedParts = keyParts.filter(part => part.trim() !== '');
+        
+        // Reconstruct the key with proper formatting
+        privateKey = [
+          '-----BEGIN PRIVATE KEY-----',
+          ...cleanedParts.filter(part => 
+            !part.includes('BEGIN') && 
+            !part.includes('END')
+          ),
+          '-----END PRIVATE KEY-----'
+        ].join('\n');
+
+        // Add final newline
+        privateKey += '\n';
+
+        console.log('Private Key Structure:', {
+          totalLines: privateKey.split('\n').length,
+          startsCorrectly: privateKey.startsWith('-----BEGIN PRIVATE KEY-----'),
+          endsCorrectly: privateKey.endsWith('-----END PRIVATE KEY-----\n'),
+          containsOnlyValidChars: /^[A-Za-z0-9+/=\n-]+$/.test(privateKey)
+        });
 
         // Create credentials object
         credentials = {
