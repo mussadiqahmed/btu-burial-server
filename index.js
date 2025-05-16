@@ -13,6 +13,9 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Serve static files
+app.use(express.static(path.join(__dirname)));
+
 // MySQL Connection Pool
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
@@ -51,12 +54,14 @@ async function getGoogleAuth() {
     }
 
     if (!credentials) {
-      throw new Error('Could not find service account credentials file in any location');
+      console.warn('⚠️ No Google Drive credentials found. File upload features will be disabled.');
+      return null;
     }
 
     // Validate the credentials object
     if (!credentials.client_email || !credentials.private_key) {
-      throw new Error('Invalid service account credentials format');
+      console.warn('⚠️ Invalid service account credentials format. File upload features will be disabled.');
+      return null;
     }
 
     console.log('🔐 Initializing Google Auth with client email:', credentials.client_email);
@@ -68,7 +73,8 @@ async function getGoogleAuth() {
     return auth;
   } catch (err) {
     console.error('❌ Error in getGoogleAuth:', err.message);
-    throw new Error(`Failed to initialize Google Auth: ${err.message}`);
+    console.warn('⚠️ File upload features will be disabled.');
+    return null;
   }
 }
 
@@ -132,17 +138,29 @@ const drivePromise = (async () => {
   try {
     console.log('🚀 Initializing Google Drive client...');
     const auth = await getGoogleAuth();
+    
+    if (!auth) {
+      console.warn('⚠️ Google Drive integration disabled - continuing without file upload capabilities');
+      return null;
+    }
+    
     console.log('✅ Google Auth initialized successfully');
     const drive = google.drive({ version: 'v3', auth });
     
     // Ensure upload folder exists
-    UPLOAD_FOLDER_ID = await ensureUploadFolder();
-    console.log('📁 Using upload folder:', UPLOAD_FOLDER_ID);
+    try {
+      UPLOAD_FOLDER_ID = await ensureUploadFolder();
+      console.log('📁 Using upload folder:', UPLOAD_FOLDER_ID);
+    } catch (err) {
+      console.warn('⚠️ Failed to ensure upload folder exists:', err.message);
+      console.warn('⚠️ File upload features may be limited');
+    }
     
     return drive;
   } catch (err) {
     console.error('❌ Failed to initialize Google Drive client:', err);
-    throw err;
+    console.warn('⚠️ Continuing without Google Drive integration');
+    return null;
   }
 })();
 
@@ -204,15 +222,23 @@ const upload = multer({
 
 // Function to upload file to Google Drive
 async function uploadToGoogleDrive(buffer, filename) {
+  const drive = await drivePromise;
+  
+  if (!drive) {
+    throw new Error('Google Drive integration is not available');
+  }
+
   if (!UPLOAD_FOLDER_ID) {
     console.log('⚠️ Upload folder ID not set, ensuring folder exists...');
-    UPLOAD_FOLDER_ID = await ensureUploadFolder();
+    try {
+      UPLOAD_FOLDER_ID = await ensureUploadFolder();
+    } catch (err) {
+      throw new Error('Failed to create upload folder: ' + err.message);
+    }
   }
 
   console.log('🚀 Starting Google Drive upload for:', filename);
-  const drive = await drivePromise;
   try {
-    // Create file metadata
     const fileMetadata = {
       name: filename,
       parents: [UPLOAD_FOLDER_ID],
@@ -224,7 +250,6 @@ async function uploadToGoogleDrive(buffer, filename) {
       parentFolder: UPLOAD_FOLDER_ID
     });
     
-    // Upload the file
     const response = await drive.files.create({
       requestBody: fileMetadata,
       media: {
@@ -237,8 +262,6 @@ async function uploadToGoogleDrive(buffer, filename) {
     const fileId = response.data.id;
     console.log('✅ File created in Google Drive with ID:', fileId);
 
-    // Make the file publicly accessible
-    console.log('🔓 Setting file permissions...');
     await drive.permissions.create({
       fileId: fileId,
       requestBody: {
@@ -248,7 +271,6 @@ async function uploadToGoogleDrive(buffer, filename) {
     });
     console.log('✅ File permissions set to public');
 
-    // Return the proxy URL format
     const proxyUrl = `/proxy-image/${fileId}`;
     console.log('✅ Generated proxy URL:', proxyUrl);
     return proxyUrl;
@@ -259,13 +281,6 @@ async function uploadToGoogleDrive(buffer, filename) {
     }
     throw new Error(`Failed to upload file to Google Drive: ${err.message}`);
   }
-}
-
-// Function to get direct Google Drive URL
-function getGoogleDriveDirectUrl(webContentLink) {
-  if (!webContentLink) return null;
-  // Convert the 'download' URL to a 'view' URL
-  return webContentLink.replace('&export=download', '').replace('download', 'view');
 }
 
 // Initialize DB
@@ -823,36 +838,12 @@ app.get("/api/news", async (req, res) => {
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
   try {
-    console.log('📊 Fetching news items...');
     const [rows] = await pool.query(
       "SELECT * FROM news ORDER BY created_at DESC LIMIT ? OFFSET ?",
       [parseInt(limit), offset]
     );
     const [countResult] = await pool.query("SELECT COUNT(*) as total FROM news");
-
-    // Clean up old image URLs and ensure proper URL format
-    for (const item of rows) {
-      if (item.image_url) {
-        if (item.image_url.startsWith('/uploads/news/')) {
-          console.log('🧹 Cleaning old image URL for news ID:', item.id);
-          try {
-            await pool.query(
-              "UPDATE news SET image_url = NULL WHERE id = ?",
-              [item.id]
-            );
-            item.image_url = null;
-            console.log('✅ Cleaned old image URL for news ID:', item.id);
-          } catch (err) {
-            console.error('❌ Failed to clean old image URL:', err);
-          }
-        } else if (!item.image_url.startsWith('/proxy-image/') && !item.image_url.startsWith('http')) {
-          // Convert any non-proxy, non-http URLs to proxy format
-          item.image_url = `/proxy-image/${item.image_url}`;
-        }
-      }
-    }
     
-    console.log('✅ Returning news items:', rows.length);
     res.json({
       data: rows,
       pagination: {
@@ -862,41 +853,38 @@ app.get("/api/news", async (req, res) => {
       }
     });
   } catch (err) {
-    console.error('❌ Error fetching news:', err);
+    console.error("Error fetching news:", err);
     res.status(500).json({ message: "Error fetching news", error: err.message });
   }
 });
 
 app.post("/api/news", upload.single('image'), async (req, res) => {
-  console.log('📝 Starting news creation...');
   const { text } = sanitizeObject(req.body);
   let image_url = null;
 
   if (!text && !req.file) {
-    console.warn('⚠️ No text or image provided');
     return res.status(400).json({ message: "Either text or image is required" });
   }
 
-  let fileId = null;
   if (req.file) {
-    console.log('🖼️ Processing image upload...');
-    const filename = `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`;
     try {
-      console.log('📤 Uploading to Google Drive:', filename);
-      fileId = await uploadToGoogleDrive(req.file.buffer, filename);
-      image_url = `/proxy-image/${fileId}`;
-      console.log('✅ Image URL created:', image_url);
+      image_url = await uploadToGoogleDrive(req.file.buffer, `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`);
+      console.log(`✅ Image uploaded to Google Drive: ${image_url}`);
     } catch (err) {
-      console.error('❌ Upload failed:', err);
-      return res.status(500).json({ 
-        message: "Failed to upload image to Google Drive", 
-        error: err.message 
-      });
+      console.error(`❌ Failed to upload image:`, err);
+      // Continue without image if Google Drive is not available
+      if (err.message.includes('Google Drive integration is not available')) {
+        console.warn('⚠️ Continuing without image upload - Google Drive not available');
+      } else {
+        return res.status(500).json({ 
+          message: "Failed to upload image", 
+          error: err.message 
+        });
+      }
     }
   }
 
   try {
-    console.log('💾 Saving to database with image_url:', image_url);
     const [result] = await pool.query(
       "INSERT INTO news (text, image_url) VALUES (?, ?)",
       [text || null, image_url]
@@ -906,30 +894,13 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
       "SELECT * FROM news WHERE id = ?",
       [result.insertId]
     );
-
-    // Ensure the response contains the correct URL format
-    const newsItem = newNews[0];
-    if (newsItem && newsItem.image_url && newsItem.image_url.startsWith('/uploads/news/')) {
-      newsItem.image_url = image_url; // Use the proxy URL we just created
-    }
     
-    console.log('✅ News created successfully:', newsItem);
     res.status(201).json({
       message: "News added successfully",
-      news: newsItem
+      news: newNews[0]
     });
   } catch (err) {
-    console.error('❌ Database error:', err);
-    // If database insert fails but file was uploaded, try to clean up
-    if (fileId) {
-      try {
-        const drive = await drivePromise;
-        await drive.files.delete({ fileId });
-        console.log('🧹 Cleaned up uploaded file after database error');
-      } catch (cleanupErr) {
-        console.error('⚠️ Failed to clean up file:', cleanupErr);
-      }
-    }
+    console.error("Error adding news:", err);
     res.status(500).json({ 
       message: "Error adding news", 
       error: err.message,
@@ -947,7 +918,7 @@ app.delete("/api/news/:id", async (req, res) => {
       return res.status(404).json({ message: "News not found" });
     }
 
-    if (news[0].image_url && !news[0].image_url.startsWith('/uploads/news/')) {
+    if (news[0].image_url) {
       try {
         const fileId = news[0].image_url.match(/[-\w]{25,}/);
         if (fileId) {
@@ -956,7 +927,7 @@ app.delete("/api/news/:id", async (req, res) => {
           console.log(`Deleted Google Drive file: ${fileId[0]}`);
         }
       } catch (deleteErr) {
-        console.error("Error deleting Google Drive file (may not exist):", deleteErr.message);
+        console.error("Error deleting Google Drive file (may not exist):", deleteErr);
       }
     }
 
@@ -968,18 +939,23 @@ app.delete("/api/news/:id", async (req, res) => {
   }
 });
 
-// Proxy endpoint for Google Drive images (to handle CORS)
+// Proxy endpoint for Google Drive images
 app.get('/proxy-image/:fileId', async (req, res) => {
   const { fileId } = req.params;
   
   if (!fileId) {
-    console.error('No fileId provided');
     return res.status(400).send('File ID is required');
   }
 
+  const drive = await drivePromise;
+  if (!drive) {
+    return res.status(503).json({ 
+      message: 'Image service temporarily unavailable',
+      error: 'Google Drive integration is not available'
+    });
+  }
+
   try {
-    const drive = await drivePromise;
-    
     // First get the file metadata to verify it exists and is an image
     const file = await drive.files.get({
       fileId: fileId,
@@ -987,7 +963,6 @@ app.get('/proxy-image/:fileId', async (req, res) => {
     });
 
     if (!file.data.mimeType?.startsWith('image/')) {
-      console.error(`Invalid file type: ${file.data.mimeType}`);
       return res.status(400).send('Not an image file');
     }
 
@@ -1006,155 +981,8 @@ app.get('/proxy-image/:fileId', async (req, res) => {
     // Pipe the response
     response.data.pipe(res);
   } catch (err) {
-    console.error('Error proxying image:', err.message);
+    console.error('Error proxying image:', err);
     res.status(500).send('Error fetching image');
-  }
-});
-
-// Debugging endpoints
-app.get('/test-drive', async (req, res) => {
-  try {
-    const drive = await drivePromise;
-    const response = await drive.files.list({ pageSize: 1 });
-    res.json({ success: true, files: response.data.files });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.get('/test-secrets', async (req, res) => {
-  try {
-    const data = await fs.readFile('/etc/secrets/service-account.json', 'utf8');
-    res.json({ success: true, client_email: JSON.parse(data).client_email });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// Add a migration function to fix existing URLs
-app.post("/api/admin/fix-news-images", async (req, res) => {
-  try {
-    // Get all news items with old upload paths
-    const [news] = await pool.query(
-      "SELECT * FROM news WHERE image_url LIKE '/uploads/news/%'"
-    );
-
-    console.log(`Found ${news.length} items with old image paths`);
-
-    // Update each item to use null for image_url since old images are not accessible
-    for (const item of news) {
-      await pool.query(
-        "UPDATE news SET image_url = NULL WHERE id = ?",
-        [item.id]
-      );
-      console.log(`Updated news item ${item.id} to remove old image path`);
-    }
-
-    res.json({ 
-      message: "Successfully updated old image paths",
-      updatedCount: news.length
-    });
-  } catch (err) {
-    console.error("Error fixing news images:", err);
-    res.status(500).json({ 
-      message: "Error fixing news images", 
-      error: err.message 
-    });
-  }
-});
-
-// Add a test endpoint for Google Drive connectivity
-app.get('/test-drive-auth', async (req, res) => {
-  try {
-    const drive = await drivePromise;
-    const response = await drive.files.list({
-      pageSize: 1,
-      fields: 'files(id, name)',
-    });
-    res.json({
-      success: true,
-      message: 'Google Drive authentication successful',
-      testFile: response.data.files[0]
-    });
-  } catch (err) {
-    console.error('❌ Drive test failed:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
-  }
-});
-
-// Add a test endpoint for folder access
-app.get('/test-folder', async (req, res) => {
-  try {
-    if (!UPLOAD_FOLDER_ID) {
-      UPLOAD_FOLDER_ID = await ensureUploadFolder();
-    }
-    
-    const drive = await drivePromise;
-    const response = await drive.files.list({
-      q: `'${UPLOAD_FOLDER_ID}' in parents and trashed=false`,
-      fields: 'files(id, name, webViewLink)',
-      pageSize: 10
-    });
-    
-    res.json({
-      success: true,
-      folderId: UPLOAD_FOLDER_ID,
-      files: response.data.files
-    });
-  } catch (err) {
-    console.error('❌ Folder test failed:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
-});
-
-// Add a cleanup function for old image URLs
-app.post("/api/admin/cleanup-image-urls", async (req, res) => {
-  try {
-    console.log('🧹 Starting image URL cleanup...');
-    
-    // Get all news items with old URLs
-    const [news] = await pool.query(
-      "SELECT * FROM news WHERE image_url IS NOT NULL AND image_url NOT LIKE '/proxy-image/%'"
-    );
-
-    console.log(`Found ${news.length} items with non-proxy image URLs`);
-    let updatedCount = 0;
-    let errorCount = 0;
-
-    for (const item of news) {
-      try {
-        // Set invalid URLs to null
-        await pool.query(
-          "UPDATE news SET image_url = NULL WHERE id = ?",
-          [item.id]
-        );
-        console.log(`✅ Cleaned up image URL for news ID: ${item.id}`);
-        updatedCount++;
-      } catch (err) {
-        console.error(`❌ Error cleaning up news ID ${item.id}:`, err);
-        errorCount++;
-      }
-    }
-
-    res.json({
-      message: "Image URL cleanup completed",
-      totalProcessed: news.length,
-      updatedCount,
-      errorCount
-    });
-  } catch (err) {
-    console.error("❌ Error in cleanup process:", err);
-    res.status(500).json({
-      message: "Error during cleanup process",
-      error: err.message
-    });
   }
 });
 
