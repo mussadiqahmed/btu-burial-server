@@ -16,6 +16,17 @@ app.use(express.json());
 // Serve static files
 app.use(express.static(path.join(__dirname)));
 
+// Handle Google credentials from environment variable
+if (process.env.GOOGLE_CREDENTIALS) {
+  try {
+    const credentialsPath = path.join(__dirname, 'btu-burial-034dc4726312.json');
+    fs.writeFileSync(credentialsPath, process.env.GOOGLE_CREDENTIALS);
+    console.log('✅ Google credentials written from environment variable');
+  } catch (err) {
+    console.error('❌ Failed to write Google credentials:', err);
+  }
+}
+
 // MySQL Connection Pool
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
