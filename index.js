@@ -830,31 +830,23 @@ app.get("/api/news", async (req, res) => {
     );
     const [countResult] = await pool.query("SELECT COUNT(*) as total FROM news");
 
-    // Clean up old image URLs and ensure proper URL format
-    for (const item of rows) {
-      if (item.image_url) {
-        if (item.image_url.startsWith('/uploads/news/')) {
-          console.log('🧹 Cleaning old image URL for news ID:', item.id);
-          try {
-            await pool.query(
-              "UPDATE news SET image_url = NULL WHERE id = ?",
-              [item.id]
-            );
-            item.image_url = null;
-            console.log('✅ Cleaned old image URL for news ID:', item.id);
-          } catch (err) {
-            console.error('❌ Failed to clean old image URL:', err);
-          }
-        } else if (!item.image_url.startsWith('/proxy-image/') && !item.image_url.startsWith('http')) {
-          // Convert any non-proxy, non-http URLs to proxy format
-          item.image_url = `/proxy-image/${item.image_url}`;
-        }
+    console.log('📝 Raw database results:', rows);
+
+    // Format the image URLs
+    const formattedRows = rows.map(item => {
+      const formatted = {...item};
+      if (formatted.image_url && !formatted.image_url.startsWith('http')) {
+        console.log(`🖼️ Processing image_url for news ID ${item.id}:`);
+        console.log('  Original:', formatted.image_url);
+        formatted.image_url = `/proxy-image/${formatted.image_url}`;
+        console.log('  Formatted:', formatted.image_url);
       }
-    }
+      return formatted;
+    });
     
-    console.log('✅ Returning news items:', rows.length);
+    console.log('✅ Returning formatted news items:', formattedRows);
     res.json({
-      data: rows,
+      data: formattedRows,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(countResult[0].total / parseInt(limit)),
@@ -869,6 +861,12 @@ app.get("/api/news", async (req, res) => {
 
 app.post("/api/news", upload.single('image'), async (req, res) => {
   console.log('📝 Starting news creation...');
+  console.log('Received file:', req.file ? {
+    originalname: req.file.originalname,
+    mimetype: req.file.mimetype,
+    size: req.file.size
+  } : 'No file uploaded');
+  
   const { text } = sanitizeObject(req.body);
   let image_url = null;
 
@@ -884,8 +882,9 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
     try {
       console.log('📤 Uploading to Google Drive:', filename);
       fileId = await uploadToGoogleDrive(req.file.buffer, filename);
-      image_url = `/proxy-image/${fileId}`;
-      console.log('✅ Image URL created:', image_url);
+      image_url = fileId; // Store just the fileId
+      console.log('✅ File ID saved:', fileId);
+      console.log('✅ Image URL to be stored:', image_url);
     } catch (err) {
       console.error('❌ Upload failed:', err);
       return res.status(500).json({ 
@@ -907,10 +906,13 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
       [result.insertId]
     );
 
-    // Ensure the response contains the correct URL format
-    const newsItem = newNews[0];
-    if (newsItem && newsItem.image_url && newsItem.image_url.startsWith('/uploads/news/')) {
-      newsItem.image_url = image_url; // Use the proxy URL we just created
+    console.log('📄 Raw database record:', newNews[0]);
+    
+    // Format the response with proxy URL
+    const newsItem = {...newNews[0]};
+    if (newsItem.image_url) {
+      newsItem.image_url = `/proxy-image/${newsItem.image_url}`;
+      console.log('🔄 Formatted response image_url:', newsItem.image_url);
     }
     
     console.log('✅ News created successfully:', newsItem);
@@ -920,7 +922,6 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Database error:', err);
-    // If database insert fails but file was uploaded, try to clean up
     if (fileId) {
       try {
         const drive = await drivePromise;
@@ -1159,14 +1160,14 @@ app.post("/api/admin/cleanup-image-urls", async (req, res) => {
 });
 
 // Add test endpoint for Google credentials
-app.get('/test-google-env', (req, res) => {
+app.get('/api/test-google-env', (req, res) => {
   const envVars = {
     hasGoogleCreds: !!process.env.GOOGLE_CREDENTIALS,
     hasClientEmail: !!process.env.GOOGLE_CLIENT_EMAIL,
     hasPrivateKey: !!process.env.GOOGLE_PRIVATE_KEY,
     credsLength: process.env.GOOGLE_CREDENTIALS?.length || 0,
     privateKeyLength: process.env.GOOGLE_PRIVATE_KEY?.length || 0,
-    clientEmail: process.env.GOOGLE_CLIENT_EMAIL || process.env.GOOGLE_CREDENTIALS ? JSON.parse(process.env.GOOGLE_CREDENTIALS).client_email : null
+    clientEmail: process.env.GOOGLE_CLIENT_EMAIL || (process.env.GOOGLE_CREDENTIALS ? JSON.parse(process.env.GOOGLE_CREDENTIALS).client_email : null)
   };
   
   res.json({
