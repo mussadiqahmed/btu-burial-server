@@ -6,7 +6,6 @@ const bcrypt = require("bcrypt");
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
-const { google } = require('googleapis');
 require("dotenv").config();
 
 const app = express();
@@ -20,6 +19,51 @@ app.use(express.json());
 // Serve static files
 app.use(express.static(path.join(__dirname)));
 
+// Image storage configuration
+const IMAGE_DOMAIN = 'https://btuburial.co.bw';
+const UPLOAD_DIR = 'uploads/news';
+
+// cPanel storage functions
+async function uploadToCPanel(buffer, filename) {
+  try {
+    console.log('🚀 Starting cPanel upload:', filename);
+    
+    // Ensure upload directory exists
+    const uploadPath = path.join(process.cwd(), 'public_html', UPLOAD_DIR);
+    await fs.mkdir(uploadPath, { recursive: true });
+    
+    // Save file to server
+    const filePath = path.join(uploadPath, filename);
+    await fs.writeFile(filePath, buffer);
+    
+    // Generate public URL
+    const publicUrl = `${IMAGE_DOMAIN}/${UPLOAD_DIR}/${filename}`;
+    console.log('✅ File uploaded successfully');
+    console.log('🔗 Public URL:', publicUrl);
+    
+    return {
+      url: publicUrl,
+      path: `${UPLOAD_DIR}/${filename}`
+    };
+  } catch (error) {
+    console.error('❌ Upload failed:', error);
+    throw new Error(`File upload failed: ${error.message}`);
+  }
+}
+
+async function deleteFromCPanel(filepath) {
+  try {
+    console.log('🗑️ Deleting file:', filepath);
+    const fullPath = path.join(process.cwd(), 'public_html', filepath);
+    await fs.unlink(fullPath);
+    console.log('✅ File deleted successfully');
+    return true;
+  } catch (error) {
+    console.error('❌ Delete failed:', error);
+    return false;
+  }
+}
+
 // MySQL Connection Pool
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
@@ -31,176 +75,6 @@ const pool = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0,
 });
-
-// Google Drive API Setup
-async function getGoogleAuth() {
-  try {
-    let credentials = null;
-
-    // First try GOOGLE_CREDENTIALS environment variable
-    if (process.env.GOOGLE_CREDENTIALS) {
-      try {
-        console.log('🔑 Attempting to use GOOGLE_CREDENTIALS environment variable');
-        credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
-        console.log('✅ Successfully parsed GOOGLE_CREDENTIALS');
-      } catch (err) {
-        console.error('❌ Failed to parse GOOGLE_CREDENTIALS:', err.message);
-      }
-    }
-
-    // If no credentials yet, try individual environment variables
-    if (!credentials && process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
-      console.log('🔑 Attempting to use individual environment variables');
-      try {
-        credentials = {
-          type: "service_account",
-          project_id: process.env.GOOGLE_PROJECT_ID,
-          private_key_id: process.env.GOOGLE_PRIVATE_KEY_ID,
-          private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
-          client_email: process.env.GOOGLE_CLIENT_EMAIL,
-          client_id: process.env.GOOGLE_CLIENT_ID,
-          auth_uri: "https://accounts.google.com/o/oauth2/auth",
-          token_uri: "https://oauth2.googleapis.com/token",
-          auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
-          client_x509_cert_url: process.env.GOOGLE_CLIENT_X509_CERT_URL
-        };
-        console.log('✅ Successfully created credentials from environment variables');
-      } catch (err) {
-        console.error('❌ Failed to create credentials from environment variables:', err.message);
-      }
-    }
-
-    // If still no credentials, try file system
-    if (!credentials) {
-      console.log('⚠️ No credentials found in environment variables, trying filesystem');
-      const possiblePaths = [
-        '/etc/secrets/btu-burial-034dc4726312.json',
-        path.join(__dirname, 'btu-burial-034dc4726312.json'),
-        path.join(process.cwd(), 'btu-burial-034dc4726312.json'),
-      ];
-
-      for (const credPath of possiblePaths) {
-        try {
-          console.log('🔑 Trying to read credentials from:', credPath);
-          credentials = JSON.parse(await fs.readFile(credPath, 'utf8'));
-          console.log('✅ Successfully read credentials from:', credPath);
-          break;
-        } catch (err) {
-          console.log('⚠️ Could not read credentials from:', credPath);
-        }
-      }
-    }
-
-    if (!credentials) {
-      console.warn('⚠️ No Google Drive credentials found. File upload features will be disabled.');
-      return null;
-    }
-
-    // Validate the credentials
-    if (!credentials.client_email || !credentials.private_key) {
-      console.warn('⚠️ Invalid credentials format. File upload features will be disabled.');
-      return null;
-    }
-
-    console.log('🔐 Initializing Google Auth with client email:', credentials.client_email);
-    
-    const auth = new google.auth.GoogleAuth({
-      credentials,
-      scopes: ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive.metadata.readonly']
-    });
-
-    // Test the credentials
-    try {
-      const drive = google.drive({ version: 'v3', auth });
-      await drive.files.list({ pageSize: 1 });
-      console.log('✅ Successfully tested Google Drive API access');
-      return auth;
-    } catch (err) {
-      console.error('❌ Failed to test Google Drive API access:', err.message);
-      return null;
-    }
-  } catch (err) {
-    console.error('❌ Error in getGoogleAuth:', err.message);
-    return null;
-  }
-}
-
-// Function to ensure upload folder exists
-async function ensureUploadFolder() {
-  const drive = await drivePromise;
-  const folderName = 'BTU_News_Images';
-  
-  try {
-    console.log('🔍 Checking for existing upload folder...');
-    
-    // Check if folder already exists
-    const response = await drive.files.list({
-      q: `mimeType='application/vnd.google-apps.folder' and name='${folderName}' and trashed=false`,
-      fields: 'files(id, name, webViewLink)',
-      spaces: 'drive'
-    });
-
-    if (response.data.files.length > 0) {
-      const folderId = response.data.files[0].id;
-      console.log('✅ Found existing folder:', folderId);
-      console.log('🔗 Folder web view link:', response.data.files[0].webViewLink);
-      return folderId;
-    }
-
-    // Create new folder if it doesn't exist
-    console.log('📁 Creating new upload folder...');
-    const fileMetadata = {
-      name: folderName,
-      mimeType: 'application/vnd.google-apps.folder'
-    };
-
-    const folder = await drive.files.create({
-      requestBody: fileMetadata,
-      fields: 'id,webViewLink'
-    });
-
-    const folderId = folder.data.id;
-    console.log('✅ Created new folder:', folderId);
-    console.log('🔗 Folder web view link:', folder.data.webViewLink);
-    
-    // Make folder publicly accessible
-    await drive.permissions.create({
-      fileId: folderId,
-      requestBody: {
-        role: 'reader',
-        type: 'anyone'
-      }
-    });
-    console.log('✅ Folder permissions set to public');
-
-    return folderId;
-  } catch (err) {
-    console.error('❌ Error ensuring upload folder:', err);
-    throw err;
-  }
-}
-
-// Initialize folder ID
-let UPLOAD_FOLDER_ID = null;
-
-// Initialize Google Drive client with error handling
-const drivePromise = (async () => {
-  try {
-    console.log('🚀 Initializing Google Drive client...');
-    const auth = await getGoogleAuth();
-    console.log('✅ Google Auth initialized successfully');
-    const drive = google.drive({ version: 'v3', auth });
-    
-    // Ensure upload folder exists
-    UPLOAD_FOLDER_ID = await ensureUploadFolder();
-    console.log('📁 Using upload folder:', UPLOAD_FOLDER_ID);
-    
-    return drive;
-  } catch (err) {
-    console.error('❌ Failed to initialize Google Drive client:', err);
-    throw err;
-  }
-})();
 
 // Rate Limiter for Admin Endpoints
 const adminLimiter = rateLimit({
@@ -258,647 +132,6 @@ const upload = multer({
   }
 });
 
-// Function to upload file to Google Drive
-async function uploadToGoogleDrive(buffer, filename) {
-  const drive = await drivePromise;
-  
-  if (!drive) {
-    console.error('❌ Google Drive client not available');
-    throw new Error('Google Drive integration is not available');
-  }
-
-  if (!UPLOAD_FOLDER_ID) {
-    console.log('⚠️ Upload folder ID not set, ensuring folder exists...');
-    try {
-      UPLOAD_FOLDER_ID = await ensureUploadFolder();
-    } catch (err) {
-      console.error('❌ Failed to create/find upload folder:', err);
-      throw new Error('Failed to create upload folder: ' + err.message);
-    }
-  }
-
-  console.log('🚀 Starting Google Drive upload for:', filename, 'to folder:', UPLOAD_FOLDER_ID);
-  try {
-    const fileMetadata = {
-      name: filename,
-      parents: [UPLOAD_FOLDER_ID],
-      mimeType: filename.match(/\.(jpg|jpeg)$/i) ? 'image/jpeg' : filename.match(/\.png$/i) ? 'image/png' : 'image/gif'
-    };
-
-    console.log('📁 Creating file in Google Drive with metadata:', {
-      name: fileMetadata.name,
-      mimeType: fileMetadata.mimeType,
-      parentFolder: UPLOAD_FOLDER_ID
-    });
-    
-    // Test folder access before upload
-    try {
-      await drive.files.list({
-        q: `'${UPLOAD_FOLDER_ID}' in parents`,
-        pageSize: 1,
-        fields: 'files(id, name)'
-      });
-      console.log('✅ Successfully verified folder access');
-    } catch (err) {
-      console.error('❌ Failed to access folder:', err);
-      throw new Error('No access to upload folder: ' + err.message);
-    }
-    
-    const response = await drive.files.create({
-      requestBody: fileMetadata,
-      media: {
-        mimeType: fileMetadata.mimeType,
-        body: buffer
-      },
-      fields: 'id,webViewLink',
-      timeout: 60000 // 60 second timeout
-    });
-
-    const fileId = response.data.id;
-    console.log('✅ File created in Google Drive with ID:', fileId);
-    console.log('🔗 Web view link:', response.data.webViewLink);
-
-    try {
-      await drive.permissions.create({
-        fileId: fileId,
-        requestBody: {
-          role: 'reader',
-          type: 'anyone'
-        }
-      });
-      console.log('✅ File permissions set to public');
-    } catch (err) {
-      console.error('❌ Failed to set file permissions:', err);
-      // Don't throw here, the file was still uploaded
-    }
-
-    return fileId;
-  } catch (err) {
-    console.error('❌ Error in uploadToGoogleDrive:', err);
-    if (err.response) {
-      console.error('Response error data:', err.response.data);
-    }
-    throw new Error(`Failed to upload file to Google Drive: ${err.message}`);
-  }
-}
-
-// Function to get direct Google Drive URL
-function getGoogleDriveDirectUrl(webContentLink) {
-  if (!webContentLink) return null;
-  // Convert the 'download' URL to a 'view' URL
-  return webContentLink.replace('&export=download', '').replace('download', 'view');
-}
-
-// Initialize DB
-(async function initializeDB() {
-  try {
-    const connection = await pool.getConnection();
-    console.log("✅ MySQL Connected");
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS admin_users (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        username VARCHAR(50) NOT NULL UNIQUE,
-        password VARCHAR(255) NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS members (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        fullName VARCHAR(255) NOT NULL,
-        contactNumber VARCHAR(15) NOT NULL,
-        idNumber VARCHAR(50) NOT NULL,
-        schoolName VARCHAR(255) NOT NULL,
-        officeContact VARCHAR(15) NOT NULL,
-        read_status ENUM('unread', 'read') DEFAULT 'unread',
-        admin_reply TEXT,
-        status ENUM('pending', 'done') DEFAULT 'pending',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS funeral_notices (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        yourName VARCHAR(255) NOT NULL,
-        idNumber VARCHAR(50) NOT NULL,
-        deceasedName VARCHAR(255) NOT NULL,
-        dependentName VARCHAR(255),
-        read_status ENUM('unread', 'read') DEFAULT 'unread',
-        admin_reply TEXT,
-        status ENUM('pending', 'done') DEFAULT 'pending',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS contact_messages (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        name VARCHAR(255) NOT NULL,
-        contactNumber VARCHAR(15) NOT NULL,
-        message TEXT NOT NULL,
-        read_status ENUM('unread', 'read') DEFAULT 'unread',
-        admin_reply TEXT,
-        status ENUM('pending', 'done') DEFAULT 'pending',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS survey_responses (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        satisfaction VARCHAR(50) NOT NULL,
-        addressed VARCHAR(50) NOT NULL,
-        responseTime VARCHAR(50) NOT NULL,
-        courtesy VARCHAR(50) NOT NULL,
-        helpful VARCHAR(50) NOT NULL,
-        expectations VARCHAR(50) NOT NULL,
-        suggestions TEXT,
-        recommend VARCHAR(50) NOT NULL,
-        difficulties TEXT,
-        overall VARCHAR(50) NOT NULL,
-        read_status ENUM('unread', 'read') DEFAULT 'unread',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS election_registrations (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        fullName VARCHAR(255) NOT NULL,
-        idNumber VARCHAR(50) NOT NULL,
-        contactNumber VARCHAR(15) NOT NULL,
-        uniqueId VARCHAR(9) NOT NULL,
-        read_status ENUM('unread', 'read') DEFAULT 'unread',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await connection.query(`
-      CREATE TABLE IF NOT EXISTS news (
-        id INT AUTO_INCREMENT PRIMARY KEY,
-        text TEXT,
-        image_url VARCHAR(255),
-        image_type ENUM('drive', 'external') DEFAULT 'drive',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    console.log("✅ Database initialized");
-    connection.release();
-  } catch (err) {
-    console.error("❌ Database initialization failed:", err.message);
-    process.exit(1);
-  }
-})();
-
-// Admin Login Endpoint
-app.post("/api/admin/login", async (req, res) => {
-  const { username, password } = sanitizeObject(req.body);
-  if (!username || !password) {
-    return res.status(400).json({ message: "Username and password required" });
-  }
-
-  try {
-    const [rows] = await pool.query("SELECT * FROM admin_users WHERE username = ?", [username]);
-    if (rows.length === 0) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    const user = rows[0];
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
-
-    res.json({ message: "Login successful", user: { id: user.id, username: user.username } });
-  } catch (err) {
-    res.status(500).json({ message: "Server error", error: err.message });
-  }
-});
-
-// Health Check
-app.get("/api/health", async (req, res) => {
-  try {
-    await pool.query("SELECT 1");
-    res.json({ status: "Server running", mysql: "Connected" });
-  } catch (err) {
-    res.status(500).json({
-      status: "Server running",
-      mysql: "Disconnected",
-      error: err.message,
-    });
-  }
-});
-
-// Dashboard Stats
-app.get("/api/admin/dashboard", async (req, res) => {
-  try {
-    const [members] = await pool.query(
-      'SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM members'
-    );
-    const [funeralNotices] = await pool.query(
-      'SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM funeral_notices'
-    );
-    const [contactMessages] = await pool.query(
-      'SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM contact_messages'
-    );
-    const [surveyResponses] = await pool.query(
-      'SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM survey_responses'
-    );
-    const [electionRegistrations] = await pool.query(
-      'SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM election_registrations'
-    );
-    const [recent] = await pool.query(`
-      (SELECT "members" as type, id, fullName as title, created_at FROM members ORDER BY created_at DESC LIMIT 5)
-      UNION
-      (SELECT "funeral_notices" as type, id, deceasedName as title, created_at FROM funeral_notices ORDER BY created_at DESC LIMIT 5)
-      UNION
-      (SELECT "contact_messages" as type, id, name as title, created_at FROM contact_messages ORDER BY created_at DESC LIMIT 5)
-      ORDER BY created_at DESC LIMIT 5
-    `);
-
-    res.json({
-      stats: {
-        members: members[0],
-        funeralNotices: funeralNotices[0],
-        contactMessages: contactMessages[0],
-        surveyResponses: surveyResponses[0],
-        electionRegistrations: electionRegistrations[0],
-      },
-      recent,
-    });
-  } catch (err) {
-    console.error("Error fetching dashboard stats:", err.message);
-    res.status(500).json({
-      message: "Error fetching dashboard stats",
-      error: err.message,
-    });
-  }
-});
-
-// Response Endpoints
-const responseEndpoints = [
-  {
-    name: "members",
-    table: "members",
-    fields: [
-      "fullName",
-      "contactNumber",
-      "idNumber",
-      "schoolName",
-      "officeContact",
-      "read_status",
-      "admin_reply",
-      "status",
-      "created_at",
-    ],
-  },
-  {
-    name: "funeral_notices",
-    table: "funeral_notices",
-    fields: [
-      "yourName",
-      "idNumber",
-      "deceasedName",
-      "dependentName",
-      "read_status",
-      "admin_reply",
-      "status",
-      "created_at",
-    ],
-  },
-  {
-    name: "contact_messages",
-    table: "contact_messages",
-    fields: [
-      "name",
-      "contactNumber",
-      "message",
-      "read_status",
-      "admin_reply",
-      "status",
-      "created_at",
-    ],
-  },
-  {
-    name: "survey_responses",
-    table: "survey_responses",
-    fields: [
-      "satisfaction",
-      "addressed",
-      "responseTime",
-      "courtesy",
-      "helpful",
-      "expectations",
-      "suggestions",
-      "recommend",
-      "difficulties",
-      "overall",
-      "read_status",
-      "created_at",
-    ],
-  },
-  {
-    name: "election_registrations",
-    table: "election_registrations",
-    fields: [
-      "fullName",
-      "idNumber",
-      "contactNumber",
-      "uniqueId",
-      "read_status",
-      "created_at",
-    ],
-  },
-];
-
-responseEndpoints.forEach(({ name, table, fields }) => {
-  app.get(`/api/admin/${name}`, async (req, res) => {
-    const { status = "all", page = 1, limit = 10 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    const where = status === "all" ? "" : `WHERE read_status = ?`;
-    const params =
-      status === "all" ? [parseInt(limit), offset] : [status, parseInt(limit), offset];
-
-    try {
-      const [rows] = await pool.query(
-        `SELECT ${fields.join(", ")}, id FROM ${table} ${where} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-        params
-      );
-      const [countResult] = await pool.query(
-        `SELECT COUNT(*) as total, SUM(read_status = "unread") as unread FROM ${table}`
-      );
-      res.json({
-        data: rows,
-        pagination: {
-          currentPage: parseInt(page),
-          totalPages: Math.ceil(countResult[0].total / parseInt(limit)),
-          totalItems: countResult[0].total,
-          unread: countResult[0].unread,
-        },
-      });
-    } catch (err) {
-      console.error(`Error fetching ${name}:`, err.message);
-      res.status(500).json({
-        message: `Error fetching ${name}`,
-        error: err.message,
-      });
-    }
-  });
-
-  app.patch(`/api/admin/${name}/:id/read`, async (req, res) => {
-    const { id } = req.params;
-    const { read_status } = req.body;
-    
-    console.log(`Attempting to update read_status for ${table} id=${id} to ${read_status}`);
-    
-    if (!["read", "unread"].includes(read_status)) {
-      console.error(`Invalid read_status value: ${read_status}`);
-      return res.status(400).json({ message: "Invalid read_status" });
-    }
-
-    try {
-      console.log(`Executing query: UPDATE ${table} SET read_status = ? WHERE id = ?`, [read_status, id]);
-      
-      const [result] = await pool.query(
-        `UPDATE ${table} SET read_status = ? WHERE id = ?`,
-        [read_status, id]
-      );
-      
-      console.log(`Query result:`, result);
-      
-      if (result.affectedRows === 0) {
-        console.error(`No record found in ${table} with id=${id}`);
-        return res.status(404).json({ message: `Record not found in ${table}` });
-      }
-      
-      const [updatedRecord] = await pool.query(
-        `SELECT * FROM ${table} WHERE id = ?`,
-        [id]
-      );
-      
-      console.log(`Updated record:`, updatedRecord[0]);
-      
-      res.json({ 
-        message: "Read status updated",
-        record: updatedRecord[0]
-      });
-    } catch (err) {
-      console.error(`Error updating read_status for ${table} id=${id}:`, err);
-      res.status(500).json({
-        message: "Error updating read status",
-        error: err.message,
-        details: err.stack
-      });
-    }
-  });
-
-  app.delete(`/api/admin/${name}/:id`, async (req, res) => {
-    const { id } = req.params;
-    try {
-      const [result] = await pool.query(`DELETE FROM ${table} WHERE id = ?`, [id]);
-      if (result.affectedRows === 0) {
-        return res.status(404).json({ message: `Record not found in ${table}` });
-      }
-      console.log(`Deleted record from ${table} id=${id}`);
-      res.json({ message: "Response deleted" });
-    } catch (err) {
-      console.error(`Error deleting from ${table} id=${id}:`, err.message);
-      res.status(500).json({
-        message: "Error deleting response",
-        error: err.message,
-      });
-    }
-  });
-
-  if (["members", "funeral_notices", "contact_messages"].includes(name)) {
-    app.patch(`/api/admin/${name}/:id/reply`, async (req, res) => {
-      const { id } = req.params;
-      const { admin_reply, status } = sanitizeObject(req.body);
-      if (!status || !["pending", "done"].includes(status)) {
-        return res.status(400).json({ message: "Invalid status" });
-      }
-
-      try {
-        const [result] = await pool.query(
-          `UPDATE ${table} SET admin_reply = ?, status = ?, read_status = 'read' WHERE id = ?`,
-          [admin_reply || null, status, id]
-        );
-        if (result.affectedRows === 0) {
-          return res.status(404).json({ message: `Record not found in ${table}` });
-        }
-        console.log(`Updated reply and status for ${table} id=${id}`);
-        res.json({ message: "Reply and status updated" });
-      } catch (err) {
-        console.error(`Error updating reply for ${table} id=${id}:`, err.message);
-        res.status(500).json({
-          message: "Error updating reply",
-          error: err.message,
-        });
-      }
-    });
-  }
-});
-
-// Survey Analysis
-app.get("/api/admin/survey_analysis", async (req, res) => {
-  try {
-    const [satisfaction] = await pool.query(`
-      SELECT satisfaction, COUNT(*) as count 
-      FROM survey_responses 
-      GROUP BY satisfaction
-    `);
-    const [recommend] = await pool.query(`
-      SELECT recommend, COUNT(*) as count 
-      FROM survey_responses 
-      GROUP BY recommend
-    `);
-    res.json({ satisfaction, recommend });
-  } catch (err) {
-    console.error("Error fetching survey analysis:", err.message);
-    res.status(500).json({
-      message: "Error fetching survey analysis",
-      error: err.message,
-    });
-  }
-});
-
-// Form Submission Endpoints
-app.post("/api/membership/join", async (req, res) => {
-  const { fullName, contactNumber, id, schoolName, officeContact } =
-    sanitizeObject(req.body);
-  if (!fullName || !contactNumber || !id || !schoolName || !officeContact) {
-    return res.status(400).json({ message: "All fields are required" });
-  }
-
-  try {
-    await pool.query(
-      "INSERT INTO members (fullName, contactNumber, idNumber, schoolName, officeContact) VALUES (?, ?, ?, ?, ?)",
-      [fullName, contactNumber, id, schoolName, officeContact]
-    );
-    res.json({
-      message: "Thank you for joining BTU Burial. We will contact you within 48 hours.",
-    });
-  } catch (err) {
-    console.error("Error inserting member:", err.message);
-    res.status(500).json({ message: "Database error", error: err.message });
-  }
-});
-
-app.post("/api/funeral-notice", async (req, res) => {
-  const { yourName, id, deceasedName, dependentName } = sanitizeObject(req.body);
-  if (!yourName || !id || !deceasedName) {
-    return res.status(400).json({ message: "Required fields are missing" });
-  }
-
-  try {
-    await pool.query(
-      "INSERT INTO funeral_notices (yourName, idNumber, deceasedName, dependentName) VALUES (?, ?, ?, ?)",
-      [yourName, id, deceasedName, dependentName || null]
-    );
-    res.json({
-      message:
-        "Thank you for submitting the funeral notice. We will contact you within 24 hours.",
-    });
-  } catch (err) {
-    console.error("Error inserting funeral notice:", err.message);
-    res.status(500).json({ message: "Database error", error: err.message });
-  }
-});
-
-app.post("/api/contact", async (req, res) => {
-  const { name, contactNumber, message } = sanitizeObject(req.body);
-  if (!name || !contactNumber || !message) {
-    return res.status(400).json({ message: "All fields are required" });
-  }
-
-  try {
-    await pool.query(
-      "INSERT INTO contact_messages (name, contactNumber, message) VALUES (?, ?, ?)",
-      [name, contactNumber, message]
-    );
-    res.json({
-      message: "Thank you for your message. We will contact you within 24 hours.",
-    });
-  } catch (err) {
-    console.error("Error inserting contact message:", err.message);
-    res.status(500).json({ message: "Database error", error: err.message });
-  }
-});
-
-app.post("/api/survey", async (req, res) => {
-  const {
-    satisfaction,
-    addressed,
-    responseTime,
-    courtesy,
-    helpful,
-    expectations,
-    suggestions,
-    recommend,
-    difficulties,
-    overall,
-  } = sanitizeObject(req.body);
-  if (
-    !satisfaction ||
-    !addressed ||
-    !responseTime ||
-    !courtesy ||
-    !helpful ||
-    !expectations ||
-    !recommend ||
-    !overall
-  ) {
-    return res.status(400).json({ message: "Required fields are missing" });
-  }
-
-  try {
-    await pool.query(
-      `INSERT INTO survey_responses 
-      (satisfaction, addressed, responseTime, courtesy, helpful, expectations, suggestions, recommend, difficulties, overall) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        satisfaction,
-        addressed,
-        responseTime,
-        courtesy,
-        helpful,
-        expectations,
-        suggestions || null,
-        recommend,
-        difficulties || null,
-        overall,
-      ]
-    );
-    res.json({ message: "Thank you for your feedback." });
-  } catch (err) {
-    console.error("Error inserting survey response:", err.message);
-    res.status(500).json({ message: "Database error", error: err.message });
-  }
-});
-
-app.post("/api/election-reg", async (req, res) => {
-  const { fullName, id, contactNumber } = sanitizeObject(req.body);
-  if (!fullName || !id || !contactNumber) {
-    return res.status(400).json({ message: "All fields are required" });
-  }
-
-  try {
-    const uniqueId = Math.random().toString(36).substr(2, 9).toUpperCase();
-    await pool.query(
-      "INSERT INTO election_registrations (fullName, idNumber, contactNumber, uniqueId) VALUES (?, ?, ?, ?)",
-      [fullName, id, contactNumber, uniqueId]
-    );
-    res.json({ message: "Election registration completed.", uniqueId });
-  } catch (err) {
-    console.error("Error inserting election registration:", err.message);
-    res.status(500).json({ message: "Database error", error: err.message });
-  }
-});
-
 // News Management Endpoints
 app.get("/api/news", async (req, res) => {
   const { page = 1, limit = 10 } = req.query;
@@ -911,18 +144,10 @@ app.get("/api/news", async (req, res) => {
       [parseInt(limit), offset]
     );
     const [countResult] = await pool.query("SELECT COUNT(*) as total FROM news");
-
-    // Format the image URLs for response
-    const formattedRows = rows.map(item => ({
-      ...item,
-      image_url: item.image_url ? 
-        (item.image_type === 'drive' ? `/proxy-image/${item.image_url}` : item.image_url) 
-        : null
-    }));
     
-    console.log('✅ Returning formatted news items:', formattedRows.length);
+    console.log('✅ Returning news items:', rows.length);
     res.json({
-      data: formattedRows,
+      data: rows,
       pagination: {
         currentPage: parseInt(page),
         totalPages: Math.ceil(countResult[0].total / parseInt(limit)),
@@ -945,45 +170,22 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
   
   const { text } = sanitizeObject(req.body);
   let image_url = null;
-  let image_type = 'drive';
+  let image_path = null;
 
   if (!text && !req.file) {
     return res.status(400).json({ message: "Either text or image is required" });
   }
 
-  // Set a longer timeout for this request
-  req.setTimeout(120000); // 2 minutes
-  res.setTimeout(120000); // 2 minutes
-
   if (req.file) {
     try {
-      // Retry upload up to 3 times
-      let retries = 3;
-      let lastError = null;
+      // Generate a unique filename
+      const filename = `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`;
       
-      while (retries > 0) {
-        try {
-          console.log(`📤 Attempting upload (${4-retries}/3)...`);
-          const fileId = await uploadToGoogleDrive(
-            req.file.buffer, 
-            `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`
-          );
-          image_url = fileId;
-          console.log('✅ File ID saved:', fileId);
-          break;
-        } catch (err) {
-          lastError = err;
-          retries--;
-          if (retries > 0) {
-            console.log(`⚠️ Upload failed, retrying... (${retries} attempts left)`);
-            await new Promise(resolve => setTimeout(resolve, 2000)); // Wait 2 seconds before retry
-          }
-        }
-      }
-      
-      if (!image_url) {
-        throw lastError || new Error('Failed to upload after 3 attempts');
-      }
+      // Upload to cPanel
+      const { url, path: filePath } = await uploadToCPanel(req.file.buffer, filename);
+      image_url = url;
+      image_path = filePath;
+      console.log('✅ File uploaded:', { url, path: filePath });
     } catch (err) {
       console.error('❌ Failed to upload image:', err);
       return res.status(500).json({ 
@@ -994,34 +196,28 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
   }
 
   try {
-    console.log('💾 Saving to database with image_url:', image_url);
     const [result] = await pool.query(
-      "INSERT INTO news (text, image_url, image_type) VALUES (?, ?, ?)",
-      [text || null, image_url, image_type]
-    );
-    
-    const [newNews] = await pool.query(
-      "SELECT * FROM news WHERE id = ?",
-      [result.insertId]
+      "INSERT INTO news (text, image_url, image_path) VALUES (?, ?, ?)",
+      [text, image_url, image_path]
     );
 
-    // Format the response
-    const newsItem = {...newNews[0]};
-    if (newsItem.image_url) {
-      newsItem.image_url = newsItem.image_type === 'drive' ? 
-        `/proxy-image/${newsItem.image_url}` : 
-        newsItem.image_url;
-    }
-    
-    console.log('✅ News created successfully:', newsItem);
-    res.status(201).json({
-      message: "News added successfully",
-      news: newsItem
+    res.json({
+      message: "News created successfully",
+      id: result.insertId,
+      text,
+      image_url,
+      image_path
     });
   } catch (err) {
     console.error('❌ Database error:', err);
+    
+    // Clean up uploaded file if database insert fails
+    if (image_path) {
+      await deleteFromCPanel(image_path).catch(console.error);
+    }
+    
     res.status(500).json({ 
-      message: "Error adding news", 
+      message: "Failed to create news", 
       error: err.message 
     });
   }
@@ -1036,17 +232,9 @@ app.delete("/api/news/:id", async (req, res) => {
       return res.status(404).json({ message: "News not found" });
     }
 
-    if (news[0].image_url && !news[0].image_url.startsWith('/uploads/news/')) {
-      try {
-        const fileId = news[0].image_url.match(/[-\w]{25,}/);
-        if (fileId) {
-          const drive = await drivePromise;
-          await drive.files.delete({ fileId: fileId[0] });
-          console.log(`Deleted Google Drive file: ${fileId[0]}`);
-        }
-      } catch (deleteErr) {
-        console.error("Error deleting Google Drive file (may not exist):", deleteErr.message);
-      }
+    // Delete the image from cPanel if it exists
+    if (news[0].image_path) {
+      await deleteFromCPanel(news[0].image_path).catch(console.error);
     }
 
     const [result] = await pool.query("DELETE FROM news WHERE id = ?", [id]);
@@ -1054,451 +242,6 @@ app.delete("/api/news/:id", async (req, res) => {
   } catch (err) {
     console.error("Error deleting news:", err.message);
     res.status(500).json({ message: "Error deleting news", error: err.message });
-  }
-});
-
-// Proxy endpoint for Google Drive images
-app.get('/proxy-image/:fileId', async (req, res) => {
-  const { fileId } = req.params;
-  
-  if (!fileId) {
-    console.error('No fileId provided');
-    return res.status(400).send('File ID is required');
-  }
-
-  // If it's a complete URL, redirect to it
-  if (fileId.startsWith('http')) {
-    return res.redirect(fileId);
-  }
-
-  // Clean up the fileId - remove any URL parts if present
-  const cleanFileId = fileId.split('/').pop().split('?')[0];
-  
-  console.log('🔍 Proxying image request for file ID:', cleanFileId);
-
-  try {
-    const drive = await drivePromise;
-    if (!drive) {
-      console.error('Google Drive client not available');
-      return res.status(503).json({
-        message: 'Image service temporarily unavailable',
-        error: 'Google Drive integration is not available'
-      });
-    }
-    
-    // First get the file metadata to verify it exists and is an image
-    const file = await drive.files.get({
-      fileId: cleanFileId,
-      fields: 'id, mimeType, webContentLink',
-      timeout: 10000 // 10 second timeout for metadata
-    });
-
-    if (!file.data.mimeType?.startsWith('image/')) {
-      console.error(`Invalid file type: ${file.data.mimeType}`);
-      return res.status(400).send('Not an image file');
-    }
-
-    console.log('✅ Found image file:', {
-      id: file.data.id,
-      mimeType: file.data.mimeType
-    });
-
-    // Get the file content with a longer timeout
-    const response = await drive.files.get({
-      fileId: cleanFileId,
-      alt: 'media',
-      timeout: 30000 // 30 second timeout for content
-    }, {
-      responseType: 'stream'
-    });
-
-    // Set appropriate headers
-    res.setHeader('Content-Type', file.data.mimeType);
-    res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
-
-    // Handle stream errors
-    response.data.on('error', (err) => {
-      console.error('❌ Stream error:', err);
-      if (!res.headersSent) {
-        res.status(500).send('Error streaming image');
-      }
-    });
-
-    // Pipe the response with error handling
-    response.data.pipe(res).on('error', (err) => {
-      console.error('❌ Pipe error:', err);
-      if (!res.headersSent) {
-        res.status(500).send('Error streaming image');
-      }
-    });
-  } catch (err) {
-    console.error('❌ Error proxying image:', err);
-    if (err.message.includes('File not found')) {
-      return res.status(404).send('Image not found');
-    }
-    if (err.code === 'ETIMEDOUT' || err.code === 'ESOCKETTIMEDOUT') {
-      return res.status(504).send('Request timed out');
-    }
-    res.status(500).send('Error fetching image');
-  }
-});
-
-// Debugging endpoints
-app.get('/test-drive', async (req, res) => {
-  try {
-    const drive = await drivePromise;
-    const response = await drive.files.list({ pageSize: 1 });
-    res.json({ success: true, files: response.data.files });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.get('/test-secrets', async (req, res) => {
-  try {
-    const data = await fs.readFile('/etc/secrets/service-account.json', 'utf8');
-    res.json({ success: true, client_email: JSON.parse(data).client_email });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// Add a migration function to fix existing URLs
-app.post("/api/admin/fix-news-images", async (req, res) => {
-  try {
-    // Get all news items with old upload paths
-    const [news] = await pool.query(
-      "SELECT * FROM news WHERE image_url LIKE '/uploads/news/%'"
-    );
-
-    console.log(`Found ${news.length} items with old image paths`);
-
-    // Update each item to use null for image_url since old images are not accessible
-    for (const item of news) {
-      await pool.query(
-        "UPDATE news SET image_url = NULL WHERE id = ?",
-        [item.id]
-      );
-      console.log(`Updated news item ${item.id} to remove old image path`);
-    }
-
-    res.json({ 
-      message: "Successfully updated old image paths",
-      updatedCount: news.length
-    });
-  } catch (err) {
-    console.error("Error fixing news images:", err);
-    res.status(500).json({ 
-      message: "Error fixing news images", 
-      error: err.message 
-    });
-  }
-});
-
-// Add a test endpoint for Google Drive connectivity
-app.get('/test-drive-auth', async (req, res) => {
-  try {
-    const drive = await drivePromise;
-    const response = await drive.files.list({
-      pageSize: 1,
-      fields: 'files(id, name)',
-    });
-    res.json({
-      success: true,
-      message: 'Google Drive authentication successful',
-      testFile: response.data.files[0]
-    });
-  } catch (err) {
-    console.error('❌ Drive test failed:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
-  }
-});
-
-// Add a test endpoint for folder access
-app.get('/test-folder', async (req, res) => {
-  try {
-    if (!UPLOAD_FOLDER_ID) {
-      UPLOAD_FOLDER_ID = await ensureUploadFolder();
-    }
-    
-    const drive = await drivePromise;
-    const response = await drive.files.list({
-      q: `'${UPLOAD_FOLDER_ID}' in parents and trashed=false`,
-      fields: 'files(id, name, webViewLink)',
-      pageSize: 10
-    });
-    
-    res.json({
-      success: true,
-      folderId: UPLOAD_FOLDER_ID,
-      files: response.data.files
-    });
-  } catch (err) {
-    console.error('❌ Folder test failed:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message
-    });
-  }
-});
-
-// Add a cleanup function for old image URLs
-app.post("/api/admin/cleanup-image-urls", async (req, res) => {
-  try {
-    console.log('🧹 Starting image URL cleanup...');
-    
-    // Get all news items with old URLs
-    const [news] = await pool.query(
-      "SELECT * FROM news WHERE image_url IS NOT NULL AND image_url NOT LIKE '/proxy-image/%'"
-    );
-
-    console.log(`Found ${news.length} items with non-proxy image URLs`);
-    let updatedCount = 0;
-    let errorCount = 0;
-
-    for (const item of news) {
-      try {
-        // Set invalid URLs to null
-        await pool.query(
-          "UPDATE news SET image_url = NULL WHERE id = ?",
-          [item.id]
-        );
-        console.log(`✅ Cleaned up image URL for news ID: ${item.id}`);
-        updatedCount++;
-      } catch (err) {
-        console.error(`❌ Error cleaning up news ID ${item.id}:`, err);
-        errorCount++;
-      }
-    }
-
-    res.json({
-      message: "Image URL cleanup completed",
-      totalProcessed: news.length,
-      updatedCount,
-      errorCount
-    });
-  } catch (err) {
-    console.error("❌ Error in cleanup process:", err);
-    res.status(500).json({
-      message: "Error during cleanup process",
-      error: err.message
-    });
-  }
-});
-
-// Add test endpoint for Google credentials
-app.get('/api/test-google-env', (req, res) => {
-  const envVars = {
-    hasGoogleCreds: !!process.env.GOOGLE_CREDENTIALS,
-    hasClientEmail: !!process.env.GOOGLE_CLIENT_EMAIL,
-    hasPrivateKey: !!process.env.GOOGLE_PRIVATE_KEY,
-    credsLength: process.env.GOOGLE_CREDENTIALS?.length || 0,
-    privateKeyLength: process.env.GOOGLE_PRIVATE_KEY?.length || 0,
-    clientEmail: process.env.GOOGLE_CLIENT_EMAIL || (process.env.GOOGLE_CREDENTIALS ? JSON.parse(process.env.GOOGLE_CREDENTIALS).client_email : null)
-  };
-  
-  res.json({
-    message: 'Google environment variables status',
-    environment: process.env.NODE_ENV,
-    variables: envVars
-  });
-});
-
-// Modify the getImageUrl function in the frontend code
-function getImageUrl(url) {
-  if (!url) {
-    return null;
-  }
-  
-  // If it's already a proxy URL, return as is
-  if (url.startsWith('/proxy-image/')) {
-    return `${API_URL}${url}`;
-  }
-  
-  // If it's a direct Google Drive file ID
-  if (url.match(/^[-\w]{25,}$/)) {
-    return `${API_URL}/proxy-image/${url}`;
-  }
-  
-  // For external URLs (like picsum), return directly
-  if (url.startsWith('http')) {
-    return url;
-  }
-  
-  return null;
-}
-
-// Add test endpoint for Google Drive folder access
-app.get('/api/test-drive-folder', async (req, res) => {
-  try {
-    const drive = await drivePromise;
-    if (!drive) {
-      throw new Error('Google Drive client not initialized');
-    }
-
-    // Test service account authentication
-    console.log('🔑 Testing service account authentication...');
-    const about = await drive.about.get({
-      fields: 'user'
-    });
-    console.log('✅ Authenticated as:', about.data.user.emailAddress);
-
-    // Ensure upload folder exists
-    console.log('📁 Testing folder access...');
-    const folderId = await ensureUploadFolder();
-    
-    // Test folder access
-    const folderContents = await drive.files.list({
-      q: `'${folderId}' in parents`,
-      fields: 'files(id, name, webViewLink, permissions)',
-      pageSize: 10
-    });
-
-    res.json({
-      success: true,
-      serviceAccount: about.data.user.emailAddress,
-      folder: {
-        id: folderId,
-        files: folderContents.data.files
-      }
-    });
-  } catch (err) {
-    console.error('❌ Drive folder test failed:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
-  }
-});
-
-// Add diagnostic endpoint for Google Drive setup
-app.get('/api/diagnose-drive', async (req, res) => {
-  try {
-    console.log('🔍 Starting Google Drive diagnosis...');
-    
-    // 1. Check service account credentials
-    const auth = await getGoogleAuth();
-    if (!auth) {
-      throw new Error('Failed to initialize Google Auth');
-    }
-    
-    const drive = google.drive({ version: 'v3', auth });
-    
-    // 2. Get service account details
-    const about = await drive.about.get({
-      fields: 'user,storageQuota'
-    });
-    
-    // 3. Check target folder
-    const targetFolderId = '1chc6EzOETzUlSD5mxv5A7nRS--XGuWBO';
-    let folderInfo;
-    try {
-      folderInfo = await drive.files.get({
-        fileId: targetFolderId,
-        fields: 'id,name,mimeType,capabilities,permissions'
-      });
-      console.log('📁 Found target folder:', folderInfo.data);
-    } catch (err) {
-      console.error('❌ Failed to access target folder:', err.message);
-      folderInfo = { error: err.message };
-    }
-    
-    // 4. Try to create a test file in the folder
-    let testFileResult;
-    try {
-      const testFile = await drive.files.create({
-        requestBody: {
-          name: 'test-file.txt',
-          parents: [targetFolderId],
-          mimeType: 'text/plain'
-        },
-        media: {
-          mimeType: 'text/plain',
-          body: 'Test file content'
-        },
-        fields: 'id,name,webViewLink'
-      });
-      console.log('✅ Successfully created test file:', testFile.data);
-      
-      // Clean up test file
-      await drive.files.delete({
-        fileId: testFile.data.id
-      });
-      console.log('🗑️ Cleaned up test file');
-      
-      testFileResult = {
-        success: true,
-        fileInfo: testFile.data
-      };
-    } catch (err) {
-      console.error('❌ Failed to create test file:', err.message);
-      testFileResult = {
-        success: false,
-        error: err.message
-      };
-    }
-    
-    // Return diagnostic information
-    res.json({
-      serviceAccount: {
-        email: about.data.user.emailAddress,
-        quota: about.data.storageQuota
-      },
-      targetFolder: {
-        id: targetFolderId,
-        info: folderInfo.data || folderInfo.error
-      },
-      testFile: testFileResult,
-      environment: {
-        GOOGLE_DRIVE_FOLDER_ID: process.env.GOOGLE_DRIVE_FOLDER_ID || 'not set',
-        hasCredentials: !!process.env.GOOGLE_CREDENTIALS || (!!process.env.GOOGLE_CLIENT_EMAIL && !!process.env.GOOGLE_PRIVATE_KEY)
-      }
-    });
-  } catch (err) {
-    console.error('❌ Diagnosis failed:', err);
-    res.status(500).json({
-      error: err.message,
-      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
-    });
-  }
-});
-
-// Add a test file upload endpoint
-app.post('/api/test-upload', upload.single('file'), async (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ message: 'No file provided' });
-  }
-
-  try {
-    console.log('📤 Testing file upload...');
-    console.log('File details:', {
-      name: req.file.originalname,
-      size: req.file.size,
-      type: req.file.mimetype
-    });
-
-    const fileId = await uploadToGoogleDrive(
-      req.file.buffer,
-      `test-${Date.now()}-${req.file.originalname}`
-    );
-
-    res.json({
-      success: true,
-      fileId: fileId,
-      viewUrl: `https://drive.google.com/file/d/${fileId}/view`
-    });
-  } catch (err) {
-    console.error('❌ Test upload failed:', err);
-    res.status(500).json({
-      success: false,
-      error: err.message,
-      details: err.response?.data || err.stack
-    });
   }
 });
 
