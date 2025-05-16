@@ -415,6 +415,7 @@ function getGoogleDriveDirectUrl(webContentLink) {
         id INT AUTO_INCREMENT PRIMARY KEY,
         text TEXT,
         image_url VARCHAR(255),
+        image_type ENUM('drive', 'external') DEFAULT 'drive',
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `);
@@ -888,7 +889,9 @@ app.get("/api/news", async (req, res) => {
     // Format the image URLs for response
     const formattedRows = rows.map(item => ({
       ...item,
-      image_url: item.image_url ? `/proxy-image/${item.image_url}` : null
+      image_url: item.image_url ? 
+        (item.image_type === 'drive' ? `/proxy-image/${item.image_url}` : item.image_url) 
+        : null
     }));
     
     console.log('✅ Returning formatted news items:', formattedRows.length);
@@ -916,6 +919,7 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
   
   const { text } = sanitizeObject(req.body);
   let image_url = null;
+  let image_type = 'drive';
 
   if (!text && !req.file) {
     return res.status(400).json({ message: "Either text or image is required" });
@@ -941,8 +945,8 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
   try {
     console.log('💾 Saving to database with image_url:', image_url);
     const [result] = await pool.query(
-      "INSERT INTO news (text, image_url) VALUES (?, ?)",
-      [text || null, image_url]
+      "INSERT INTO news (text, image_url, image_type) VALUES (?, ?, ?)",
+      [text || null, image_url, image_type]
     );
     
     const [newNews] = await pool.query(
@@ -953,7 +957,9 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
     // Format the response
     const newsItem = {...newNews[0]};
     if (newsItem.image_url) {
-      newsItem.image_url = `/proxy-image/${newsItem.image_url}`;
+      newsItem.image_url = newsItem.image_type === 'drive' ? 
+        `/proxy-image/${newsItem.image_url}` : 
+        newsItem.image_url;
     }
     
     console.log('✅ News created successfully:', newsItem);
