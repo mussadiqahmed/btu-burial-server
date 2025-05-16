@@ -28,47 +28,93 @@ const pool = mysql.createPool({
 // Google Drive API Setup
 async function getGoogleAuth() {
   try {
-    // Use the correct service account file name
-    const possiblePaths = [
-      '/etc/secrets/btu-burial-034dc4726312.json',  // Production path
-      path.join(__dirname, 'btu-burial-034dc4726312.json'), // Local path in server directory
-      path.join(process.cwd(), 'btu-burial-034dc4726312.json'), // Local path in root directory
-    ];
-
     let credentials = null;
-    let usedPath = null;
 
-    for (const credPath of possiblePaths) {
+    // First try GOOGLE_CREDENTIALS environment variable
+    if (process.env.GOOGLE_CREDENTIALS) {
       try {
-        console.log('🔑 Trying to read credentials from:', credPath);
-        credentials = JSON.parse(await fs.readFile(credPath, 'utf8'));
-        usedPath = credPath;
-        console.log('✅ Successfully read credentials from:', credPath);
-        break;
+        console.log('🔑 Attempting to use GOOGLE_CREDENTIALS environment variable');
+        credentials = JSON.parse(process.env.GOOGLE_CREDENTIALS);
+        console.log('✅ Successfully parsed GOOGLE_CREDENTIALS');
       } catch (err) {
-        console.log('⚠️ Could not read credentials from:', credPath);
+        console.error('❌ Failed to parse GOOGLE_CREDENTIALS:', err.message);
+      }
+    }
+
+    // If no credentials yet, try individual environment variables
+    if (!credentials && process.env.GOOGLE_CLIENT_EMAIL && process.env.GOOGLE_PRIVATE_KEY) {
+      console.log('🔑 Attempting to use individual environment variables');
+      try {
+        credentials = {
+          type: "service_account",
+          project_id: process.env.GOOGLE_PROJECT_ID,
+          private_key_id: process.env.GOOGLE_PRIVATE_KEY_ID,
+          private_key: process.env.GOOGLE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+          client_email: process.env.GOOGLE_CLIENT_EMAIL,
+          client_id: process.env.GOOGLE_CLIENT_ID,
+          auth_uri: "https://accounts.google.com/o/oauth2/auth",
+          token_uri: "https://oauth2.googleapis.com/token",
+          auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs",
+          client_x509_cert_url: process.env.GOOGLE_CLIENT_X509_CERT_URL
+        };
+        console.log('✅ Successfully created credentials from environment variables');
+      } catch (err) {
+        console.error('❌ Failed to create credentials from environment variables:', err.message);
+      }
+    }
+
+    // If still no credentials, try file system
+    if (!credentials) {
+      console.log('⚠️ No credentials found in environment variables, trying filesystem');
+      const possiblePaths = [
+        '/etc/secrets/btu-burial-034dc4726312.json',
+        path.join(__dirname, 'btu-burial-034dc4726312.json'),
+        path.join(process.cwd(), 'btu-burial-034dc4726312.json'),
+      ];
+
+      for (const credPath of possiblePaths) {
+        try {
+          console.log('🔑 Trying to read credentials from:', credPath);
+          credentials = JSON.parse(await fs.readFile(credPath, 'utf8'));
+          console.log('✅ Successfully read credentials from:', credPath);
+          break;
+        } catch (err) {
+          console.log('⚠️ Could not read credentials from:', credPath);
+        }
       }
     }
 
     if (!credentials) {
-      throw new Error('Could not find service account credentials file in any location');
+      console.warn('⚠️ No Google Drive credentials found. File upload features will be disabled.');
+      return null;
     }
 
-    // Validate the credentials object
+    // Validate the credentials
     if (!credentials.client_email || !credentials.private_key) {
-      throw new Error('Invalid service account credentials format');
+      console.warn('⚠️ Invalid credentials format. File upload features will be disabled.');
+      return null;
     }
 
     console.log('🔐 Initializing Google Auth with client email:', credentials.client_email);
+    
     const auth = new google.auth.GoogleAuth({
       credentials,
       scopes: ['https://www.googleapis.com/auth/drive.file', 'https://www.googleapis.com/auth/drive.metadata.readonly']
     });
-    
-    return auth;
+
+    // Test the credentials
+    try {
+      const drive = google.drive({ version: 'v3', auth });
+      await drive.files.list({ pageSize: 1 });
+      console.log('✅ Successfully tested Google Drive API access');
+      return auth;
+    } catch (err) {
+      console.error('❌ Failed to test Google Drive API access:', err.message);
+      return null;
+    }
   } catch (err) {
     console.error('❌ Error in getGoogleAuth:', err.message);
-    throw new Error(`Failed to initialize Google Auth: ${err.message}`);
+    return null;
   }
 }
 
@@ -204,15 +250,23 @@ const upload = multer({
 
 // Function to upload file to Google Drive
 async function uploadToGoogleDrive(buffer, filename) {
+  const drive = await drivePromise;
+  
+  if (!drive) {
+    throw new Error('Google Drive integration is not available');
+  }
+
   if (!UPLOAD_FOLDER_ID) {
     console.log('⚠️ Upload folder ID not set, ensuring folder exists...');
-    UPLOAD_FOLDER_ID = await ensureUploadFolder();
+    try {
+      UPLOAD_FOLDER_ID = await ensureUploadFolder();
+    } catch (err) {
+      throw new Error('Failed to create upload folder: ' + err.message);
+    }
   }
 
   console.log('🚀 Starting Google Drive upload for:', filename);
-  const drive = await drivePromise;
   try {
-    // Create file metadata
     const fileMetadata = {
       name: filename,
       parents: [UPLOAD_FOLDER_ID],
@@ -224,7 +278,6 @@ async function uploadToGoogleDrive(buffer, filename) {
       parentFolder: UPLOAD_FOLDER_ID
     });
     
-    // Upload the file
     const response = await drive.files.create({
       requestBody: fileMetadata,
       media: {
@@ -237,8 +290,6 @@ async function uploadToGoogleDrive(buffer, filename) {
     const fileId = response.data.id;
     console.log('✅ File created in Google Drive with ID:', fileId);
 
-    // Make the file publicly accessible
-    console.log('🔓 Setting file permissions...');
     await drive.permissions.create({
       fileId: fileId,
       requestBody: {
@@ -248,10 +299,7 @@ async function uploadToGoogleDrive(buffer, filename) {
     });
     console.log('✅ File permissions set to public');
 
-    // Return the proxy URL format
-    const proxyUrl = `/proxy-image/${fileId}`;
-    console.log('✅ Generated proxy URL:', proxyUrl);
-    return proxyUrl;
+    return fileId; // Return just the file ID
   } catch (err) {
     console.error('❌ Error in uploadToGoogleDrive:', err);
     if (err.response) {
@@ -830,21 +878,13 @@ app.get("/api/news", async (req, res) => {
     );
     const [countResult] = await pool.query("SELECT COUNT(*) as total FROM news");
 
-    console.log('📝 Raw database results:', rows);
-
-    // Format the image URLs
-    const formattedRows = rows.map(item => {
-      const formatted = {...item};
-      if (formatted.image_url && !formatted.image_url.startsWith('http')) {
-        console.log(`🖼️ Processing image_url for news ID ${item.id}:`);
-        console.log('  Original:', formatted.image_url);
-        formatted.image_url = `/proxy-image/${formatted.image_url}`;
-        console.log('  Formatted:', formatted.image_url);
-      }
-      return formatted;
-    });
+    // Format the image URLs for response
+    const formattedRows = rows.map(item => ({
+      ...item,
+      image_url: item.image_url ? `/proxy-image/${item.image_url}` : null
+    }));
     
-    console.log('✅ Returning formatted news items:', formattedRows);
+    console.log('✅ Returning formatted news items:', formattedRows.length);
     res.json({
       data: formattedRows,
       pagination: {
@@ -871,24 +911,21 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
   let image_url = null;
 
   if (!text && !req.file) {
-    console.warn('⚠️ No text or image provided');
     return res.status(400).json({ message: "Either text or image is required" });
   }
 
-  let fileId = null;
   if (req.file) {
-    console.log('🖼️ Processing image upload...');
-    const filename = `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`;
     try {
-      console.log('📤 Uploading to Google Drive:', filename);
-      fileId = await uploadToGoogleDrive(req.file.buffer, filename);
-      image_url = fileId; // Store just the fileId
+      const fileId = await uploadToGoogleDrive(
+        req.file.buffer, 
+        `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`
+      );
+      image_url = fileId; // Store just the file ID
       console.log('✅ File ID saved:', fileId);
-      console.log('✅ Image URL to be stored:', image_url);
     } catch (err) {
-      console.error('❌ Upload failed:', err);
+      console.error('❌ Failed to upload image:', err);
       return res.status(500).json({ 
-        message: "Failed to upload image to Google Drive", 
+        message: "Failed to upload image", 
         error: err.message 
       });
     }
@@ -906,13 +943,10 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
       [result.insertId]
     );
 
-    console.log('📄 Raw database record:', newNews[0]);
-    
-    // Format the response with proxy URL
+    // Format the response
     const newsItem = {...newNews[0]};
     if (newsItem.image_url) {
       newsItem.image_url = `/proxy-image/${newsItem.image_url}`;
-      console.log('🔄 Formatted response image_url:', newsItem.image_url);
     }
     
     console.log('✅ News created successfully:', newsItem);
@@ -922,19 +956,9 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Database error:', err);
-    if (fileId) {
-      try {
-        const drive = await drivePromise;
-        await drive.files.delete({ fileId });
-        console.log('🧹 Cleaned up uploaded file after database error');
-      } catch (cleanupErr) {
-        console.error('⚠️ Failed to clean up file:', cleanupErr);
-      }
-    }
     res.status(500).json({ 
       message: "Error adding news", 
-      error: err.message,
-      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      error: err.message
     });
   }
 });
