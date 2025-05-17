@@ -35,7 +35,7 @@ const FTP_CONFIG = {
 
 // Function to upload file to cPanel via FTP
 async function uploadToCPanel(file, filename) {
-  const client = new ftp.Client(3000);
+  const client = new ftp.Client();
   client.ftp.verbose = true;
   
   try {
@@ -45,52 +45,79 @@ async function uploadToCPanel(file, filename) {
       port: FTP_CONFIG.port
     });
 
+    // Configure longer timeouts and passive mode
     await client.access({
       ...FTP_CONFIG,
-      connTimeout: 10000,
-      pasvTimeout: 10000,
-      keepalive: 10000
+      connTimeout: 30000,     // 30 seconds connection timeout
+      pasvTimeout: 30000,     // 30 seconds passive mode timeout
+      keepalive: 30000,       // 30 seconds keepalive
+      socketTimeout: 30000,   // 30 seconds socket timeout
+      passive: true           // Use passive mode
     });
+
+    console.log('✅ FTP Connection established');
     
     // Create a temporary file
     const tempPath = path.join(os.tmpdir(), filename);
     await fs.writeFile(tempPath, file.buffer);
+    console.log('✅ Temporary file created:', tempPath);
     
-    // Ensure the remote directory exists
-    console.log('📁 Ensuring remote directory exists:', UPLOAD_DIR);
-    
-    // First navigate to the home directory
-    await client.cd('/home/btuburial.co.bw/btuburial');
-    console.log('✅ Changed to home directory');
+    try {
+      // Try to navigate to the home directory
+      await client.cd('/home/btuburial.co.bw/btuburial');
+      console.log('✅ Changed to home directory');
+    } catch (err) {
+      console.log('⚠️ Could not change to home directory, trying root');
+      // If home directory fails, try from root
+      await client.cd('/');
+    }
     
     // Create the directory structure
     const dirs = ['public_html', 'uploads', 'news'];
-    let currentPath = '';
     
     for (const dir of dirs) {
       try {
         await client.cd(dir);
         console.log(`✅ Changed to directory: ${dir}`);
       } catch (err) {
-        console.log(`Creating directory: ${dir}`);
-        await client.send('MKD', dir);
-        await client.cd(dir);
+        try {
+          console.log(`📁 Creating directory: ${dir}`);
+          await client.send('MKD', dir);
+          await client.cd(dir);
+          console.log(`✅ Created and changed to directory: ${dir}`);
+        } catch (mkdirErr) {
+          console.error(`❌ Error creating directory ${dir}:`, mkdirErr.message);
+          throw mkdirErr;
+        }
       }
-      currentPath += '/' + dir;
     }
     
-    // Upload the file
+    // List current directory to verify location
+    console.log('📂 Current directory contents:');
+    await client.list();
+    
+    // Upload the file with retries
     console.log(`📤 Uploading file: ${filename}`);
-    try {
-      await client.uploadFrom(tempPath, filename);
-      console.log('✅ File uploaded successfully');
-    } catch (err) {
-      console.error('❌ Upload failed:', err.message);
-      throw new Error(`File upload failed: ${err.message}`);
+    let retries = 3;
+    while (retries > 0) {
+      try {
+        await client.uploadFrom(tempPath, filename);
+        console.log('✅ File uploaded successfully');
+        break;
+      } catch (err) {
+        retries--;
+        if (retries === 0) {
+          console.error('❌ Upload failed after all retries:', err.message);
+          throw err;
+        }
+        console.log(`⚠️ Upload attempt failed, ${retries} retries remaining:`, err.message);
+        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
+      }
     }
     
     // Clean up temp file
     await fs.unlink(tempPath);
+    console.log('✅ Temporary file cleaned up');
     
     // Return the public URL
     const url = `${IMAGE_DOMAIN}/uploads/news/${filename}`;
@@ -100,7 +127,8 @@ async function uploadToCPanel(file, filename) {
     console.error('❌ Error in uploadToCPanel:', err);
     throw new Error(`Failed to upload to cPanel: ${err.message}`);
   } finally {
-    client.close();
+    await client.close();
+    console.log('✅ FTP Connection closed');
   }
 }
 
