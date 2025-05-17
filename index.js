@@ -24,31 +24,28 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const UPLOAD_DIR = 'uploads/news';  // Directory structure for uploads
+const BASE_DIR = '/home/btuburia/public_html';  // Base directory in cPanel
+const UPLOAD_DIR = 'uploads/news';  // Relative upload path
 const FTP_CONFIG = {
-  host: 'ftp.btuburial.co.bw',  // FTP server hostname
-  user: 'btuburial@btuburial.co.bw',
+  host: 'ftp.btuburial.co.bw',
+  user: 'btuburia2@btuburial.co.bw',
   password: 'ahmed.9292',
   secure: false,
   port: 21,
   debug: console.log
 };
 
-// Function to explore directory contents
-async function exploreDirectory(client, path = '.') {
+// Function to ensure directory exists
+async function ensureDirectory(client, path) {
   try {
-    console.log(`\n📂 Exploring directory: ${path}`);
-    const contents = await client.list(path);
-    console.log('Contents:', contents.map(item => ({
-      name: item.name,
-      type: item.type === 2 ? 'directory' : 'file',
-      permissions: item.permissions
-    })));
-    return contents;
+    await client.cd(path);
+    console.log(`✅ Changed to directory: ${path}`);
   } catch (err) {
-    console.error(`❌ Cannot list directory ${path}:`, err.message);
-    return [];
+    console.log(`📁 Creating directory: ${path}`);
+    await client.send('MKD', path);
+    await client.cd(path);
   }
+  return client.pwd();
 }
 
 // Function to upload file to cPanel via FTP
@@ -80,26 +77,19 @@ async function uploadToCPanel(file, filename) {
     console.log('✅ Temporary file created:', tempPath);
 
     try {
-      // First navigate to uploads directory
-      await client.cd('uploads');
-      console.log('✅ Changed to uploads directory');
+      // Navigate to base directory
+      await client.cd(BASE_DIR);
+      console.log('✅ Changed to base directory:', BASE_DIR);
 
-      // Show contents
-      console.log('📂 Contents of uploads directory:');
-      const uploadsList = await client.list();
-      console.log(uploadsList);
-
-      // Navigate to news directory
-      try {
-        await client.cd('news');
-        console.log('✅ Changed to news directory');
-      } catch (newsErr) {
-        // If news directory doesn't exist, create it
-        console.log('📁 News directory not found, creating it...');
-        await client.send('MKD', 'news');
-        await client.cd('news');
-        console.log('✅ Created and changed to news directory');
+      // Create and navigate through the directory structure
+      const dirs = UPLOAD_DIR.split('/');
+      for (const dir of dirs) {
+        await ensureDirectory(client, dir);
       }
+
+      // Show current working directory
+      const currentDir = await client.pwd();
+      console.log('📍 Current directory:', currentDir);
       
       // Upload the file
       console.log(`📤 Uploading file: ${filename}`);
@@ -108,6 +98,8 @@ async function uploadToCPanel(file, filename) {
 
       // Verify the file exists
       const uploadedFiles = await client.list();
+      console.log('📂 Directory contents after upload:', uploadedFiles);
+      
       const fileExists = uploadedFiles.some(f => f.name === filename);
       if (!fileExists) {
         throw new Error('File not found after upload');
@@ -134,7 +126,7 @@ async function uploadToCPanel(file, filename) {
     }
     
     // Return the public URL
-    const url = `${IMAGE_DOMAIN}/uploads/news/${filename}`;
+    const url = `${IMAGE_DOMAIN}/${UPLOAD_DIR}/${filename}`;
     console.log('✅ Process completed. Public URL:', url);
     return url;
   } catch (err) {
@@ -160,10 +152,18 @@ async function deleteFromCPanel(imageUrl) {
     
     // Extract filename from URL
     const filename = imageUrl.split('/').pop();
-    const remotePath = `${UPLOAD_DIR}/${filename}`;
     
-    console.log('🗑️ Deleting file:', remotePath);
-    await client.remove(remotePath);
+    // Navigate to base directory
+    await client.cd(BASE_DIR);
+    
+    // Navigate through upload directory structure
+    const dirs = UPLOAD_DIR.split('/');
+    for (const dir of dirs) {
+      await client.cd(dir);
+    }
+    
+    console.log('🗑️ Deleting file:', filename);
+    await client.remove(filename);
     console.log('✅ File deleted successfully');
   } catch (err) {
     console.error('❌ Error deleting from cPanel:', err);
