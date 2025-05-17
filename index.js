@@ -6,8 +6,6 @@ const bcrypt = require("bcrypt");
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs').promises;
-const fsSync = require('fs');  // Add synchronous fs module
-const { google } = require('googleapis');
 const ftp = require('basic-ftp');
 const os = require('os');
 require("dotenv").config();
