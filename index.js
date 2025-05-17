@@ -23,7 +23,8 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const UPLOAD_DIR = 'uploads/news';  // Changed to match existing server structure
+const BASE_DIR = 'public_html';  // Base directory where uploads should go
+const UPLOAD_DIR = 'uploads/news';  // Directory structure for uploads
 const FTP_CONFIG = {
   host: 'btuburial.co.bw',
   user: 'btuburial@btuburial.co.bw',
@@ -76,23 +77,18 @@ async function uploadToCPanel(file, filename) {
 
     console.log('✅ FTP Connection established');
 
-    // Check current directory
-    const pwd = await client.pwd();
-    console.log('📂 Current working directory:', pwd);
-
-    // List current directory contents
-    console.log('📂 Initial directory contents:');
-    const initialList = await client.list();
-    console.log(initialList);
-    
-    // Create a temporary file
-    const tempPath = path.join(os.tmpdir(), filename);
-    await fs.writeFile(tempPath, file.buffer);
-    console.log('✅ Temporary file created:', tempPath);
+    // First navigate to the base directory
+    try {
+      await client.cd(BASE_DIR);
+      console.log(`✅ Changed to base directory: ${BASE_DIR}`);
+    } catch (baseErr) {
+      console.error(`❌ Cannot access base directory ${BASE_DIR}:`, baseErr.message);
+      throw new Error(`Cannot access base directory: ${baseErr.message}`);
+    }
 
     // Create and navigate through directory structure
-    const dirs = ['uploads', 'news'];  // Removed public_html since we start at root
-    let currentPath = '';
+    const dirs = UPLOAD_DIR.split('/');
+    let currentPath = BASE_DIR;
     
     for (const dir of dirs) {
       // Create directory
@@ -116,6 +112,11 @@ async function uploadToCPanel(file, filename) {
         throw cdErr;
       }
     }
+
+    // Create a temporary file
+    const tempPath = path.join(os.tmpdir(), filename);
+    await fs.writeFile(tempPath, file.buffer);
+    console.log('✅ Temporary file created:', tempPath);
     
     // Upload the file with retries
     console.log(`📤 Uploading file: ${filename}`);
