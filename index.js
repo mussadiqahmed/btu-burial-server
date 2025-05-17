@@ -23,54 +23,81 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const UPLOAD_DIR = process.env.UPLOAD_DIR || '/public_html/uploads/news';
+const UPLOAD_DIR = '/home/btuburial.co.bw/btuburial/public_html/uploads/news';
 const FTP_CONFIG = {
-  host: process.env.FTP_HOST,
-  user: process.env.FTP_USER,
-  password: process.env.FTP_PASSWORD,
-  secure: true
+  host: 'btuburial.co.bw',
+  user: 'btuburial',
+  password: 'ahmed.9292',
+  secure: false,
+  port: 21,
+  debug: console.log
 };
 
 // Function to upload file to cPanel via FTP
 async function uploadToCPanel(file, filename) {
-  const client = new ftp.Client();
+  const client = new ftp.Client(3000);
   client.ftp.verbose = true;
   
   try {
-    console.log('🔄 Connecting to FTP server...');
-    await client.access(FTP_CONFIG);
+    console.log('🔄 Connecting to FTP server...', {
+      host: FTP_CONFIG.host,
+      user: FTP_CONFIG.user,
+      port: FTP_CONFIG.port
+    });
+
+    await client.access({
+      ...FTP_CONFIG,
+      connTimeout: 10000,
+      pasvTimeout: 10000,
+      keepalive: 10000
+    });
     
     // Create a temporary file
     const tempPath = path.join(os.tmpdir(), filename);
     await fs.writeFile(tempPath, file.buffer);
     
     // Ensure the remote directory exists
-    console.log('📁 Ensuring remote directory exists...');
-    const dirs = UPLOAD_DIR.split('/').filter(Boolean);
+    console.log('📁 Ensuring remote directory exists:', UPLOAD_DIR);
+    
+    // First navigate to the home directory
+    await client.cd('/home/btuburial.co.bw/btuburial');
+    console.log('✅ Changed to home directory');
+    
+    // Create the directory structure
+    const dirs = ['public_html', 'uploads', 'news'];
     let currentPath = '';
     
     for (const dir of dirs) {
-      currentPath += '/' + dir;
       try {
-        await client.ensureDir(currentPath);
+        await client.cd(dir);
+        console.log(`✅ Changed to directory: ${dir}`);
       } catch (err) {
-        console.log(`Creating directory: ${currentPath}`);
+        console.log(`Creating directory: ${dir}`);
+        await client.send('MKD', dir);
+        await client.cd(dir);
       }
+      currentPath += '/' + dir;
     }
     
     // Upload the file
-    console.log(`📤 Uploading file to ${UPLOAD_DIR}/${filename}`);
-    await client.uploadFrom(tempPath, `${UPLOAD_DIR}/${filename}`);
+    console.log(`📤 Uploading file: ${filename}`);
+    try {
+      await client.uploadFrom(tempPath, filename);
+      console.log('✅ File uploaded successfully');
+    } catch (err) {
+      console.error('❌ Upload failed:', err.message);
+      throw new Error(`File upload failed: ${err.message}`);
+    }
     
     // Clean up temp file
     await fs.unlink(tempPath);
     
     // Return the public URL
     const url = `${IMAGE_DOMAIN}/uploads/news/${filename}`;
-    console.log('✅ File uploaded successfully:', url);
+    console.log('✅ Process completed. Public URL:', url);
     return url;
   } catch (err) {
-    console.error('❌ Error uploading to cPanel:', err);
+    console.error('❌ Error in uploadToCPanel:', err);
     throw new Error(`Failed to upload to cPanel: ${err.message}`);
   } finally {
     client.close();
