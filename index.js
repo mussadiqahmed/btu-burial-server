@@ -69,31 +69,44 @@ async function uploadToCPanel(file, filename) {
     const tempPath = path.join(os.tmpdir(), filename);
     await fs.writeFile(tempPath, file.buffer);
     console.log('✅ Temporary file created:', tempPath);
-    
-    // Create directory structure one by one
+
+    // Create and navigate through directory structure
     const dirs = ['public_html', 'uploads', 'news'];
     
     for (const dir of dirs) {
       try {
-        // Try to change to directory first
-        await client.cd(dir);
-        console.log(`✅ Changed to existing directory: ${dir}`);
+        // Try to list the directory first to check if it exists
+        console.log(`📂 Checking if ${dir} exists...`);
+        await client.list(dir);
+        console.log(`✅ Directory ${dir} exists`);
       } catch (err) {
-        // If directory doesn't exist, try to create it
+        // Directory doesn't exist, create it
+        console.log(`📁 Creating directory: ${dir}`);
         try {
-          console.log(`📁 Attempting to create directory: ${dir}`);
-          await client.sendIgnoringError('MKD', dir);
-          await client.cd(dir);
-          console.log(`✅ Created and changed to directory: ${dir}`);
-          
-          // List contents after changing directory
-          console.log(`📂 Contents of ${dir}:`);
-          const dirList = await client.list();
-          console.log(dirList);
+          await client.send('MKD', dir);
+          console.log(`✅ Created directory: ${dir}`);
         } catch (mkdirErr) {
-          console.error(`❌ Error with directory ${dir}:`, mkdirErr.message);
-          throw mkdirErr;
+          console.error(`❌ Error creating directory ${dir}:`, mkdirErr.message);
+          if (mkdirErr.code === 550) {
+            console.log('⚠️ Permission denied. Trying to continue anyway...');
+          } else {
+            throw mkdirErr;
+          }
         }
+      }
+
+      // Try to change into the directory
+      try {
+        await client.cd(dir);
+        console.log(`✅ Changed to directory: ${dir}`);
+        
+        // List contents after changing directory
+        console.log(`📂 Contents of ${dir}:`);
+        const dirList = await client.list();
+        console.log(dirList);
+      } catch (cdErr) {
+        console.error(`❌ Cannot change to directory ${dir}:`, cdErr.message);
+        throw cdErr;
       }
     }
     
