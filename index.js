@@ -23,7 +23,7 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const UPLOAD_DIR = '/home/btuburial.co.bw/public_html/uploads/news';
+const UPLOAD_DIR = 'public_html/uploads/news';  // Changed to relative path
 const FTP_CONFIG = {
   host: 'btuburial.co.bw',
   user: 'btuburial@btuburial.co.bw',
@@ -55,60 +55,47 @@ async function uploadToCPanel(file, filename) {
     });
 
     console.log('✅ FTP Connection established');
+
+    // Check current directory
+    const pwd = await client.pwd();
+    console.log('📂 Current working directory:', pwd);
+
+    // List current directory contents
+    console.log('📂 Initial directory contents:');
+    const initialList = await client.list();
+    console.log(initialList);
     
     // Create a temporary file
     const tempPath = path.join(os.tmpdir(), filename);
     await fs.writeFile(tempPath, file.buffer);
     console.log('✅ Temporary file created:', tempPath);
     
-    // Try to navigate to the correct directory
-    try {
-      // First try the absolute path
-      await client.cd('/home/btuburial.co.bw/public_html');
-      console.log('✅ Changed to public_html directory');
-    } catch (err) {
-      console.log('⚠️ Could not change to absolute path, trying relative path');
-      try {
-        // Try relative to user's home
-        await client.cd('public_html');
-        console.log('✅ Changed to public_html directory');
-      } catch (err2) {
-        console.log('⚠️ Could not change to public_html, creating directory structure');
-        try {
-          await client.send('MKD', 'public_html');
-          await client.cd('public_html');
-          console.log('✅ Created and changed to public_html directory');
-        } catch (mkdirErr) {
-          console.error('❌ Error creating public_html:', mkdirErr.message);
-          throw mkdirErr;
-        }
-      }
-    }
-    
-    // Create the uploads/news directories
-    const dirs = ['uploads', 'news'];
+    // Create directory structure one by one
+    const dirs = ['public_html', 'uploads', 'news'];
     
     for (const dir of dirs) {
       try {
+        // Try to change to directory first
         await client.cd(dir);
-        console.log(`✅ Changed to directory: ${dir}`);
+        console.log(`✅ Changed to existing directory: ${dir}`);
       } catch (err) {
+        // If directory doesn't exist, try to create it
         try {
-          console.log(`📁 Creating directory: ${dir}`);
-          await client.send('MKD', dir);
+          console.log(`📁 Attempting to create directory: ${dir}`);
+          await client.sendIgnoringError('MKD', dir);
           await client.cd(dir);
           console.log(`✅ Created and changed to directory: ${dir}`);
+          
+          // List contents after changing directory
+          console.log(`📂 Contents of ${dir}:`);
+          const dirList = await client.list();
+          console.log(dirList);
         } catch (mkdirErr) {
-          console.error(`❌ Error creating directory ${dir}:`, mkdirErr.message);
+          console.error(`❌ Error with directory ${dir}:`, mkdirErr.message);
           throw mkdirErr;
         }
       }
     }
-    
-    // List current directory to verify location
-    console.log('📂 Current directory contents:');
-    const list = await client.list();
-    console.log(list);
     
     // Upload the file with retries
     console.log(`📤 Uploading file: ${filename}`);
@@ -117,6 +104,14 @@ async function uploadToCPanel(file, filename) {
       try {
         await client.uploadFrom(tempPath, filename);
         console.log('✅ File uploaded successfully');
+        
+        // Verify the file exists
+        const uploadedFiles = await client.list();
+        const fileExists = uploadedFiles.some(f => f.name === filename);
+        if (!fileExists) {
+          throw new Error('File not found after upload');
+        }
+        console.log('✅ File verified in directory');
         break;
       } catch (err) {
         retries--;
