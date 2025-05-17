@@ -23,7 +23,8 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const UPLOAD_PATH = 'back/uploads/news';  // Updated path through back folder
+const HOME_DIR = 'home/btuburia';  // cPanel home directory
+const UPLOAD_DIR = 'uploads/news';  // Upload directory relative to home
 const FTP_CONFIG = {
   host: 'btuburial.co.bw',
   user: 'btuburial@btuburial.co.bw',
@@ -56,27 +57,25 @@ async function uploadToCPanel(file, filename) {
 
     console.log('✅ FTP Connection established');
 
-    // Show initial directory and contents
-    const initialDir = await client.pwd();
-    console.log('📍 Starting directory:', initialDir);
-    console.log('📂 Initial directory contents:');
-    const initialList = await client.list();
-    console.log(initialList);
-
     // Create a temporary file
     const tempPath = path.join(os.tmpdir(), filename);
     await fs.writeFile(tempPath, file.buffer);
     console.log('✅ Temporary file created:', tempPath);
 
     try {
-      // Navigate to back/uploads/news
-      await client.cd(UPLOAD_PATH);
-      console.log(`✅ Changed to upload directory: ${UPLOAD_PATH}`);
-      
+      // First navigate to home directory
+      await client.cd(HOME_DIR);
+      console.log(`✅ Changed to home directory: ${HOME_DIR}`);
+
       // Show current directory contents
       console.log('📂 Current directory contents:');
-      const dirList = await client.list();
-      console.log(dirList);
+      const homeList = await client.list();
+      console.log(homeList);
+
+      // Navigate to the upload directory
+      const uploadPath = UPLOAD_DIR;
+      await client.cd(uploadPath);
+      console.log(`✅ Changed to upload directory: ${uploadPath}`);
       
       // Upload the file with retries
       console.log(`📤 Uploading file: ${filename}`);
@@ -150,7 +149,7 @@ async function deleteFromCPanel(imageUrl) {
     
     // Extract filename from URL
     const filename = imageUrl.split('/').pop();
-    const remotePath = `${UPLOAD_PATH}/${filename}`;
+    const remotePath = `${UPLOAD_DIR}/${filename}`;
     
     console.log('🗑️ Deleting file:', remotePath);
     await client.remove(remotePath);
