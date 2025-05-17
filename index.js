@@ -23,7 +23,7 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const FTP_BASE_PATH = '/home/btuburia/btuburial.co.bw/btuburial';  // Base FTP path
+const FTP_BASE_PATH = 'home/btuburia/btuburial.co.bw/btuburial';  // Removed leading slash
 const UPLOAD_DIR = 'uploads/news';  // Upload directory relative to base path
 const FTP_CONFIG = {
   host: 'btuburial.co.bw',
@@ -74,24 +74,45 @@ async function uploadToCPanel(file, filename) {
 
     console.log('✅ FTP Connection established');
 
+    // Show initial directory
+    const initialDir = await client.pwd();
+    console.log('📍 Starting directory:', initialDir);
+    console.log('📂 Initial directory contents:');
+    const initialList = await client.list();
+    console.log(initialList);
+
     // Create a temporary file
     const tempPath = path.join(os.tmpdir(), filename);
     await fs.writeFile(tempPath, file.buffer);
     console.log('✅ Temporary file created:', tempPath);
 
     try {
-      // Navigate to the base directory first
-      await client.cd(FTP_BASE_PATH);
-      console.log(`✅ Changed to base directory: ${FTP_BASE_PATH}`);
+      // Try to navigate through each part of the path
+      const pathParts = FTP_BASE_PATH.split('/');
+      let currentPath = '';
 
-      // Show current directory contents
-      console.log('📂 Current directory contents:');
-      const baseList = await client.list();
-      console.log(baseList);
+      for (const part of pathParts) {
+        currentPath = currentPath ? `${currentPath}/${part}` : part;
+        try {
+          await client.cd(part);
+          console.log(`✅ Changed to: ${part} (Current path: ${currentPath})`);
+          
+          // Show contents after each successful navigation
+          console.log(`📂 Contents of ${currentPath}:`);
+          const dirList = await client.list();
+          console.log(dirList);
+        } catch (cdErr) {
+          console.error(`❌ Cannot change to ${part}:`, cdErr.message);
+          throw new Error(`Cannot access ${currentPath}: ${cdErr.message}`);
+        }
+      }
 
-      // Navigate to uploads/news
-      await client.cd(UPLOAD_DIR);
-      console.log(`✅ Changed to upload directory: ${UPLOAD_DIR}`);
+      // Now navigate to uploads/news
+      const uploadParts = UPLOAD_DIR.split('/');
+      for (const part of uploadParts) {
+        await client.cd(part);
+        console.log(`✅ Changed to: ${part}`);
+      }
       
       // Upload the file
       console.log(`📤 Uploading file: ${filename}`);
@@ -107,6 +128,16 @@ async function uploadToCPanel(file, filename) {
       console.log('✅ File verified in directory');
 
     } catch (err) {
+      // If we get an error, show where we are
+      try {
+        const currentDir = await client.pwd();
+        console.log(`📍 Current directory when error occurred: ${currentDir}`);
+        const dirContents = await client.list();
+        console.log('📂 Available directories/files:', dirContents);
+      } catch (pwdErr) {
+        console.error('❌ Could not get current directory:', pwdErr.message);
+      }
+
       console.error('❌ Error during upload process:', err.message);
       throw new Error(`Upload failed: ${err.message}`);
     } finally {
