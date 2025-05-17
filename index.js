@@ -23,7 +23,6 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const BASE_DIR = 'public_html';  // Base directory where uploads should go
 const UPLOAD_DIR = 'uploads/news';  // Directory structure for uploads
 const FTP_CONFIG = {
   host: 'btuburial.co.bw',
@@ -33,26 +32,6 @@ const FTP_CONFIG = {
   port: 21,
   debug: console.log
 };
-
-// Function to create directory if it doesn't exist
-async function createDirectoryIfNotExists(client, dirName) {
-  try {
-    console.log(`📂 Checking if ${dirName} exists...`);
-    await client.list(dirName);
-    console.log(`✅ Directory ${dirName} exists`);
-    return true;
-  } catch (err) {
-    console.log(`📁 Creating directory: ${dirName}`);
-    try {
-      await client.send('MKD', dirName);
-      console.log(`✅ Created directory: ${dirName}`);
-      return true;
-    } catch (mkdirErr) {
-      console.error(`❌ Error creating directory ${dirName}:`, mkdirErr.message);
-      return false;
-    }
-  }
-}
 
 // Function to upload file to cPanel via FTP
 async function uploadToCPanel(file, filename) {
@@ -77,72 +56,70 @@ async function uploadToCPanel(file, filename) {
 
     console.log('✅ FTP Connection established');
 
-    // First navigate to the base directory
-    try {
-      await client.cd(BASE_DIR);
-      console.log(`✅ Changed to base directory: ${BASE_DIR}`);
-    } catch (baseErr) {
-      console.error(`❌ Cannot access base directory ${BASE_DIR}:`, baseErr.message);
-      throw new Error(`Cannot access base directory: ${baseErr.message}`);
-    }
+    // Check initial directory
+    const initialDir = await client.pwd();
+    console.log('📂 Initial working directory:', initialDir);
 
-    // Create and navigate through directory structure
-    const dirs = UPLOAD_DIR.split('/');
-    let currentPath = BASE_DIR;
-    
-    for (const dir of dirs) {
-      // Create directory
-      const created = await createDirectoryIfNotExists(client, dir);
-      if (!created) {
-        throw new Error(`Failed to create directory: ${dir}`);
-      }
-
-      // Try to change into the directory
-      try {
-        await client.cd(dir);
-        currentPath += '/' + dir;
-        console.log(`✅ Changed to directory: ${currentPath}`);
-        
-        // List contents after changing directory
-        console.log(`📂 Contents of ${currentPath}:`);
-        const dirList = await client.list();
-        console.log(dirList);
-      } catch (cdErr) {
-        console.error(`❌ Cannot change to directory ${dir}:`, cdErr.message);
-        throw cdErr;
-      }
-    }
+    // List root directory contents
+    console.log('📂 Root directory contents:');
+    const rootList = await client.list();
+    console.log(rootList);
 
     // Create a temporary file
     const tempPath = path.join(os.tmpdir(), filename);
     await fs.writeFile(tempPath, file.buffer);
     console.log('✅ Temporary file created:', tempPath);
-    
-    // Upload the file with retries
-    console.log(`📤 Uploading file: ${filename}`);
-    let retries = 3;
-    while (retries > 0) {
+
+    // Try to directly access the uploads directory
+    try {
+      await client.cd('uploads');
+      console.log('✅ Changed to uploads directory');
+      
+      // List uploads directory contents
+      console.log('📂 Contents of uploads directory:');
+      const uploadsList = await client.list();
+      console.log(uploadsList);
+
+      // Try to access or create news directory
       try {
-        await client.uploadFrom(tempPath, filename);
-        console.log('✅ File uploaded successfully');
-        
-        // Verify the file exists
-        const uploadedFiles = await client.list();
-        const fileExists = uploadedFiles.some(f => f.name === filename);
-        if (!fileExists) {
-          throw new Error('File not found after upload');
-        }
-        console.log('✅ File verified in directory');
-        break;
-      } catch (err) {
-        retries--;
-        if (retries === 0) {
-          console.error('❌ Upload failed after all retries:', err.message);
-          throw err;
-        }
-        console.log(`⚠️ Upload attempt failed, ${retries} retries remaining:`, err.message);
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await client.cd('news');
+        console.log('✅ Changed to news directory');
+      } catch (newsErr) {
+        console.log('📁 News directory not found, creating it...');
+        await client.send('MKD', 'news');
+        await client.cd('news');
+        console.log('✅ Created and changed to news directory');
       }
+
+      // Upload the file with retries
+      console.log(`📤 Uploading file: ${filename}`);
+      let retries = 3;
+      while (retries > 0) {
+        try {
+          await client.uploadFrom(tempPath, filename);
+          console.log('✅ File uploaded successfully');
+          
+          // Verify the file exists
+          const uploadedFiles = await client.list();
+          const fileExists = uploadedFiles.some(f => f.name === filename);
+          if (!fileExists) {
+            throw new Error('File not found after upload');
+          }
+          console.log('✅ File verified in directory');
+          break;
+        } catch (err) {
+          retries--;
+          if (retries === 0) {
+            console.error('❌ Upload failed after all retries:', err.message);
+            throw err;
+          }
+          console.log(`⚠️ Upload attempt failed, ${retries} retries remaining:`, err.message);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        }
+      }
+    } catch (err) {
+      console.error('❌ Error accessing or creating directories:', err.message);
+      throw new Error(`Failed to access or create directories: ${err.message}`);
     }
     
     // Clean up temp file
