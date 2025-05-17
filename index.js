@@ -23,7 +23,7 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const UPLOAD_DIR = 'public_html/uploads/news';  // Changed to relative path
+const UPLOAD_DIR = 'uploads/news';  // Changed to match existing server structure
 const FTP_CONFIG = {
   host: 'btuburial.co.bw',
   user: 'btuburial@btuburial.co.bw',
@@ -32,6 +32,26 @@ const FTP_CONFIG = {
   port: 21,
   debug: console.log
 };
+
+// Function to create directory if it doesn't exist
+async function createDirectoryIfNotExists(client, dirName) {
+  try {
+    console.log(`📂 Checking if ${dirName} exists...`);
+    await client.list(dirName);
+    console.log(`✅ Directory ${dirName} exists`);
+    return true;
+  } catch (err) {
+    console.log(`📁 Creating directory: ${dirName}`);
+    try {
+      await client.send('MKD', dirName);
+      console.log(`✅ Created directory: ${dirName}`);
+      return true;
+    } catch (mkdirErr) {
+      console.error(`❌ Error creating directory ${dirName}:`, mkdirErr.message);
+      return false;
+    }
+  }
+}
 
 // Function to upload file to cPanel via FTP
 async function uploadToCPanel(file, filename) {
@@ -71,37 +91,24 @@ async function uploadToCPanel(file, filename) {
     console.log('✅ Temporary file created:', tempPath);
 
     // Create and navigate through directory structure
-    const dirs = ['public_html', 'uploads', 'news'];
+    const dirs = ['uploads', 'news'];  // Removed public_html since we start at root
+    let currentPath = '';
     
     for (const dir of dirs) {
-      try {
-        // Try to list the directory first to check if it exists
-        console.log(`📂 Checking if ${dir} exists...`);
-        await client.list(dir);
-        console.log(`✅ Directory ${dir} exists`);
-      } catch (err) {
-        // Directory doesn't exist, create it
-        console.log(`📁 Creating directory: ${dir}`);
-        try {
-          await client.send('MKD', dir);
-          console.log(`✅ Created directory: ${dir}`);
-        } catch (mkdirErr) {
-          console.error(`❌ Error creating directory ${dir}:`, mkdirErr.message);
-          if (mkdirErr.code === 550) {
-            console.log('⚠️ Permission denied. Trying to continue anyway...');
-          } else {
-            throw mkdirErr;
-          }
-        }
+      // Create directory
+      const created = await createDirectoryIfNotExists(client, dir);
+      if (!created) {
+        throw new Error(`Failed to create directory: ${dir}`);
       }
 
       // Try to change into the directory
       try {
         await client.cd(dir);
-        console.log(`✅ Changed to directory: ${dir}`);
+        currentPath += '/' + dir;
+        console.log(`✅ Changed to directory: ${currentPath}`);
         
         // List contents after changing directory
-        console.log(`📂 Contents of ${dir}:`);
+        console.log(`📂 Contents of ${currentPath}:`);
         const dirList = await client.list();
         console.log(dirList);
       } catch (cdErr) {
