@@ -24,7 +24,6 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const BASE_DIR = '/home/btuburia/public_html';  // Base directory in cPanel
 const UPLOAD_DIR = 'uploads/news';  // Relative upload path
 const FTP_CONFIG = {
   host: 'ftp.btuburial.co.bw',
@@ -77,9 +76,10 @@ async function uploadToCPanel(file, filename) {
     console.log('✅ Temporary file created:', tempPath);
 
     try {
-      // Navigate to base directory
-      await client.cd(BASE_DIR);
-      console.log('✅ Changed to base directory:', BASE_DIR);
+      // Show root directory contents
+      console.log('📂 Root directory contents:');
+      const rootContents = await client.list();
+      console.log(rootContents);
 
       // Create and navigate through the directory structure
       const dirs = UPLOAD_DIR.split('/');
@@ -152,9 +152,6 @@ async function deleteFromCPanel(imageUrl) {
     
     // Extract filename from URL
     const filename = imageUrl.split('/').pop();
-    
-    // Navigate to base directory
-    await client.cd(BASE_DIR);
     
     // Navigate through upload directory structure
     const dirs = UPLOAD_DIR.split('/');
