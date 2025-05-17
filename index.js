@@ -23,8 +23,8 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const HOME_DIR = 'home/btuburia';  // cPanel home directory
-const UPLOAD_DIR = 'uploads/news';  // Upload directory relative to home
+const FTP_BASE_PATH = '/home/btuburia/btuburial.co.bw/btuburial';  // Base FTP path
+const UPLOAD_DIR = 'uploads/news';  // Upload directory relative to base path
 const FTP_CONFIG = {
   host: 'btuburial.co.bw',
   user: 'btuburial@btuburial.co.bw',
@@ -33,6 +33,23 @@ const FTP_CONFIG = {
   port: 21,
   debug: console.log
 };
+
+// Function to explore directory contents
+async function exploreDirectory(client, path = '.') {
+  try {
+    console.log(`\n📂 Exploring directory: ${path}`);
+    const contents = await client.list(path);
+    console.log('Contents:', contents.map(item => ({
+      name: item.name,
+      type: item.type === 2 ? 'directory' : 'file',
+      permissions: item.permissions
+    })));
+    return contents;
+  } catch (err) {
+    console.error(`❌ Cannot list directory ${path}:`, err.message);
+    return [];
+  }
+}
 
 // Function to upload file to cPanel via FTP
 async function uploadToCPanel(file, filename) {
@@ -63,64 +80,40 @@ async function uploadToCPanel(file, filename) {
     console.log('✅ Temporary file created:', tempPath);
 
     try {
-      // First navigate to home directory
-      await client.cd(HOME_DIR);
-      console.log(`✅ Changed to home directory: ${HOME_DIR}`);
+      // Navigate to the base directory first
+      await client.cd(FTP_BASE_PATH);
+      console.log(`✅ Changed to base directory: ${FTP_BASE_PATH}`);
 
       // Show current directory contents
       console.log('📂 Current directory contents:');
-      const homeList = await client.list();
-      console.log(homeList);
+      const baseList = await client.list();
+      console.log(baseList);
 
-      // Navigate to the upload directory
-      const uploadPath = UPLOAD_DIR;
-      await client.cd(uploadPath);
-      console.log(`✅ Changed to upload directory: ${uploadPath}`);
+      // Navigate to uploads/news
+      await client.cd(UPLOAD_DIR);
+      console.log(`✅ Changed to upload directory: ${UPLOAD_DIR}`);
       
-      // Upload the file with retries
+      // Upload the file
       console.log(`📤 Uploading file: ${filename}`);
-      let retries = 3;
-      while (retries > 0) {
-        try {
-          await client.uploadFrom(tempPath, filename);
-          console.log('✅ File uploaded successfully');
-          
-          // Verify the file exists
-          const uploadedFiles = await client.list();
-          const fileExists = uploadedFiles.some(f => f.name === filename);
-          if (!fileExists) {
-            throw new Error('File not found after upload');
-          }
-          console.log('✅ File verified in directory');
-          break;
-        } catch (err) {
-          retries--;
-          if (retries === 0) {
-            console.error('❌ Upload failed after all retries:', err.message);
-            throw err;
-          }
-          console.log(`⚠️ Upload attempt failed, ${retries} retries remaining:`, err.message);
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        }
+      await client.uploadFrom(tempPath, filename);
+      console.log('✅ File uploaded successfully');
+
+      // Verify the file exists
+      const uploadedFiles = await client.list();
+      const fileExists = uploadedFiles.some(f => f.name === filename);
+      if (!fileExists) {
+        throw new Error('File not found after upload');
       }
+      console.log('✅ File verified in directory');
+
     } catch (err) {
-      // If we get a directory error, try to show where we are
-      try {
-        const currentDir = await client.pwd();
-        console.log(`📍 Current directory when error occurred: ${currentDir}`);
-        const dirContents = await client.list();
-        console.log('📂 Available directories/files:', dirContents);
-      } catch (pwdErr) {
-        console.error('❌ Could not get current directory:', pwdErr.message);
-      }
-      
-      console.error('❌ Error accessing directory or uploading:', err.message);
-      throw new Error(`Failed to upload: ${err.message}`);
+      console.error('❌ Error during upload process:', err.message);
+      throw new Error(`Upload failed: ${err.message}`);
+    } finally {
+      // Clean up temp file
+      await fs.unlink(tempPath);
+      console.log('✅ Temporary file cleaned up');
     }
-    
-    // Clean up temp file
-    await fs.unlink(tempPath);
-    console.log('✅ Temporary file cleaned up');
     
     // Return the public URL
     const url = `${IMAGE_DOMAIN}/uploads/news/${filename}`;
