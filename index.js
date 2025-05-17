@@ -56,41 +56,16 @@ async function uploadToCPanel(file, filename) {
 
     console.log('✅ FTP Connection established');
 
-    // Check initial directory
-    const initialDir = await client.pwd();
-    console.log('📂 Initial working directory:', initialDir);
-
-    // List root directory contents
-    console.log('📂 Root directory contents:');
-    const rootList = await client.list();
-    console.log(rootList);
-
     // Create a temporary file
     const tempPath = path.join(os.tmpdir(), filename);
     await fs.writeFile(tempPath, file.buffer);
     console.log('✅ Temporary file created:', tempPath);
 
-    // Try to directly access the uploads directory
+    // Navigate directly to the uploads/news directory
     try {
-      await client.cd('uploads');
-      console.log('✅ Changed to uploads directory');
+      await client.cd(UPLOAD_DIR);
+      console.log(`✅ Changed to ${UPLOAD_DIR} directory`);
       
-      // List uploads directory contents
-      console.log('📂 Contents of uploads directory:');
-      const uploadsList = await client.list();
-      console.log(uploadsList);
-
-      // Try to access or create news directory
-      try {
-        await client.cd('news');
-        console.log('✅ Changed to news directory');
-      } catch (newsErr) {
-        console.log('📁 News directory not found, creating it...');
-        await client.send('MKD', 'news');
-        await client.cd('news');
-        console.log('✅ Created and changed to news directory');
-      }
-
       // Upload the file with retries
       console.log(`📤 Uploading file: ${filename}`);
       let retries = 3;
@@ -118,8 +93,8 @@ async function uploadToCPanel(file, filename) {
         }
       }
     } catch (err) {
-      console.error('❌ Error accessing or creating directories:', err.message);
-      throw new Error(`Failed to access or create directories: ${err.message}`);
+      console.error('❌ Error accessing directory or uploading:', err.message);
+      throw new Error(`Failed to upload: ${err.message}`);
     }
     
     // Clean up temp file
