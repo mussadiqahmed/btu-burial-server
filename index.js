@@ -23,10 +23,9 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const FTP_BASE_PATH = 'home/btuburia/btuburial.co.bw/btuburial';  // Removed leading slash
-const UPLOAD_DIR = 'uploads/news';  // Upload directory relative to base path
+const UPLOAD_DIR = 'uploads/news';  // Directory structure for uploads
 const FTP_CONFIG = {
-  host: 'ftp.btuburial.co.bw',  // Updated to correct FTP server hostname
+  host: 'ftp.btuburial.co.bw',  // FTP server hostname
   user: 'btuburial@btuburial.co.bw',
   password: 'ahmed.9292',
   secure: false,
@@ -74,44 +73,31 @@ async function uploadToCPanel(file, filename) {
 
     console.log('✅ FTP Connection established');
 
-    // Show initial directory
-    const initialDir = await client.pwd();
-    console.log('📍 Starting directory:', initialDir);
-    console.log('📂 Initial directory contents:');
-    const initialList = await client.list();
-    console.log(initialList);
-
     // Create a temporary file
     const tempPath = path.join(os.tmpdir(), filename);
     await fs.writeFile(tempPath, file.buffer);
     console.log('✅ Temporary file created:', tempPath);
 
     try {
-      // Try to navigate through each part of the path
-      const pathParts = FTP_BASE_PATH.split('/');
-      let currentPath = '';
+      // First navigate to uploads directory
+      await client.cd('uploads');
+      console.log('✅ Changed to uploads directory');
 
-      for (const part of pathParts) {
-        currentPath = currentPath ? `${currentPath}/${part}` : part;
-        try {
-          await client.cd(part);
-          console.log(`✅ Changed to: ${part} (Current path: ${currentPath})`);
-          
-          // Show contents after each successful navigation
-          console.log(`📂 Contents of ${currentPath}:`);
-          const dirList = await client.list();
-          console.log(dirList);
-        } catch (cdErr) {
-          console.error(`❌ Cannot change to ${part}:`, cdErr.message);
-          throw new Error(`Cannot access ${currentPath}: ${cdErr.message}`);
-        }
-      }
+      // Show contents
+      console.log('📂 Contents of uploads directory:');
+      const uploadsList = await client.list();
+      console.log(uploadsList);
 
-      // Now navigate to uploads/news
-      const uploadParts = UPLOAD_DIR.split('/');
-      for (const part of uploadParts) {
-        await client.cd(part);
-        console.log(`✅ Changed to: ${part}`);
+      // Navigate to news directory
+      try {
+        await client.cd('news');
+        console.log('✅ Changed to news directory');
+      } catch (newsErr) {
+        // If news directory doesn't exist, create it
+        console.log('📁 News directory not found, creating it...');
+        await client.send('MKD', 'news');
+        await client.cd('news');
+        console.log('✅ Created and changed to news directory');
       }
       
       // Upload the file
