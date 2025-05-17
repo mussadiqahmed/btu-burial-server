@@ -23,7 +23,7 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const UPLOAD_DIR = 'uploads/news';  // Directory structure for uploads
+const UPLOAD_PATH = 'back/uploads/news';  // Updated path through back folder
 const FTP_CONFIG = {
   host: 'btuburial.co.bw',
   user: 'btuburial@btuburial.co.bw',
@@ -56,15 +56,27 @@ async function uploadToCPanel(file, filename) {
 
     console.log('✅ FTP Connection established');
 
+    // Show initial directory and contents
+    const initialDir = await client.pwd();
+    console.log('📍 Starting directory:', initialDir);
+    console.log('📂 Initial directory contents:');
+    const initialList = await client.list();
+    console.log(initialList);
+
     // Create a temporary file
     const tempPath = path.join(os.tmpdir(), filename);
     await fs.writeFile(tempPath, file.buffer);
     console.log('✅ Temporary file created:', tempPath);
 
-    // Navigate directly to the uploads/news directory
     try {
-      await client.cd(UPLOAD_DIR);
-      console.log(`✅ Changed to ${UPLOAD_DIR} directory`);
+      // Navigate to back/uploads/news
+      await client.cd(UPLOAD_PATH);
+      console.log(`✅ Changed to upload directory: ${UPLOAD_PATH}`);
+      
+      // Show current directory contents
+      console.log('📂 Current directory contents:');
+      const dirList = await client.list();
+      console.log(dirList);
       
       // Upload the file with retries
       console.log(`📤 Uploading file: ${filename}`);
@@ -93,6 +105,16 @@ async function uploadToCPanel(file, filename) {
         }
       }
     } catch (err) {
+      // If we get a directory error, try to show where we are
+      try {
+        const currentDir = await client.pwd();
+        console.log(`📍 Current directory when error occurred: ${currentDir}`);
+        const dirContents = await client.list();
+        console.log('📂 Available directories/files:', dirContents);
+      } catch (pwdErr) {
+        console.error('❌ Could not get current directory:', pwdErr.message);
+      }
+      
       console.error('❌ Error accessing directory or uploading:', err.message);
       throw new Error(`Failed to upload: ${err.message}`);
     }
@@ -128,7 +150,7 @@ async function deleteFromCPanel(imageUrl) {
     
     // Extract filename from URL
     const filename = imageUrl.split('/').pop();
-    const remotePath = `${UPLOAD_DIR}/${filename}`;
+    const remotePath = `${UPLOAD_PATH}/${filename}`;
     
     console.log('🗑️ Deleting file:', remotePath);
     await client.remove(remotePath);
