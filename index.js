@@ -9,6 +9,7 @@ const fs = require('fs').promises;
 const ftp = require('basic-ftp');
 const os = require('os');
 require("dotenv").config();
+const axios = require('axios');
 
 const app = express();
 
@@ -827,6 +828,21 @@ app.post("/api/news", upload.single('image'), async (req, res) => {
       const filename = `news-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(req.file.originalname)}`;
       image_url = await uploadToCPanel(req.file, filename);
       console.log(`✅ Image uploaded to cPanel: ${image_url}`);
+      
+      // Add a small delay to allow for FTP propagation
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Verify the file is accessible
+      try {
+        const response = await axios.head(image_url, { timeout: 5000 });
+        if (response.status !== 200) {
+          throw new Error(`Image verification failed with status ${response.status}`);
+        }
+        console.log('✅ Image URL verified as accessible');
+      } catch (verifyErr) {
+        console.warn(`⚠️ Image may not be immediately accessible: ${verifyErr.message}`);
+        // Continue anyway as the file might just need more time to propagate
+      }
     } catch (err) {
       console.error(`❌ Failed to upload image:`, err);
       return res.status(500).json({ 
