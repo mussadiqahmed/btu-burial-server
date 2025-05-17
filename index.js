@@ -26,7 +26,7 @@ const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
 const FTP_BASE_PATH = 'home/btuburia/btuburial.co.bw/btuburial';  // Removed leading slash
 const UPLOAD_DIR = 'uploads/news';  // Upload directory relative to base path
 const FTP_CONFIG = {
-  host: 'btuburial.co.bw',
+  host: 'ftp.btuburial.co.bw',  // Updated to correct FTP server hostname
   user: 'btuburial@btuburial.co.bw',
   password: 'ahmed.9292',
   secure: false,
