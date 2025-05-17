@@ -23,10 +23,10 @@ app.use(express.static(path.join(__dirname)));
 
 // cPanel Storage Configuration
 const IMAGE_DOMAIN = process.env.IMAGE_DOMAIN || 'https://btuburial.co.bw';
-const UPLOAD_DIR = '/home/btuburial.co.bw/btuburial/public_html/uploads/news';
+const UPLOAD_DIR = '/home/btuburial.co.bw/public_html/uploads/news';
 const FTP_CONFIG = {
   host: 'btuburial.co.bw',
-  user: 'btuburial',
+  user: 'btuburial@btuburial.co.bw',
   password: 'ahmed.9292',
   secure: false,
   port: 21,
@@ -45,14 +45,13 @@ async function uploadToCPanel(file, filename) {
       port: FTP_CONFIG.port
     });
 
-    // Configure longer timeouts and passive mode
     await client.access({
       ...FTP_CONFIG,
-      connTimeout: 30000,     // 30 seconds connection timeout
-      pasvTimeout: 30000,     // 30 seconds passive mode timeout
-      keepalive: 30000,       // 30 seconds keepalive
-      socketTimeout: 30000,   // 30 seconds socket timeout
-      passive: true           // Use passive mode
+      connTimeout: 60000,
+      pasvTimeout: 60000,
+      keepalive: 60000,
+      socketTimeout: 60000,
+      passive: true
     });
 
     console.log('✅ FTP Connection established');
@@ -62,18 +61,32 @@ async function uploadToCPanel(file, filename) {
     await fs.writeFile(tempPath, file.buffer);
     console.log('✅ Temporary file created:', tempPath);
     
+    // Try to navigate to the correct directory
     try {
-      // Try to navigate to the home directory
-      await client.cd('/home/btuburial.co.bw/btuburial');
-      console.log('✅ Changed to home directory');
+      // First try the absolute path
+      await client.cd('/home/btuburial.co.bw/public_html');
+      console.log('✅ Changed to public_html directory');
     } catch (err) {
-      console.log('⚠️ Could not change to home directory, trying root');
-      // If home directory fails, try from root
-      await client.cd('/');
+      console.log('⚠️ Could not change to absolute path, trying relative path');
+      try {
+        // Try relative to user's home
+        await client.cd('public_html');
+        console.log('✅ Changed to public_html directory');
+      } catch (err2) {
+        console.log('⚠️ Could not change to public_html, creating directory structure');
+        try {
+          await client.send('MKD', 'public_html');
+          await client.cd('public_html');
+          console.log('✅ Created and changed to public_html directory');
+        } catch (mkdirErr) {
+          console.error('❌ Error creating public_html:', mkdirErr.message);
+          throw mkdirErr;
+        }
+      }
     }
     
-    // Create the directory structure
-    const dirs = ['public_html', 'uploads', 'news'];
+    // Create the uploads/news directories
+    const dirs = ['uploads', 'news'];
     
     for (const dir of dirs) {
       try {
@@ -94,7 +107,8 @@ async function uploadToCPanel(file, filename) {
     
     // List current directory to verify location
     console.log('📂 Current directory contents:');
-    await client.list();
+    const list = await client.list();
+    console.log(list);
     
     // Upload the file with retries
     console.log(`📤 Uploading file: ${filename}`);
@@ -111,7 +125,7 @@ async function uploadToCPanel(file, filename) {
           throw err;
         }
         console.log(`⚠️ Upload attempt failed, ${retries} retries remaining:`, err.message);
-        await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 second before retry
+        await new Promise(resolve => setTimeout(resolve, 2000));
       }
     }
     
@@ -127,8 +141,12 @@ async function uploadToCPanel(file, filename) {
     console.error('❌ Error in uploadToCPanel:', err);
     throw new Error(`Failed to upload to cPanel: ${err.message}`);
   } finally {
-    await client.close();
-    console.log('✅ FTP Connection closed');
+    try {
+      await client.close();
+      console.log('✅ FTP Connection closed');
+    } catch (err) {
+      console.error('❌ Error closing FTP connection:', err);
+    }
   }
 }
 
